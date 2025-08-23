@@ -164,7 +164,24 @@ export default class SyncthingLauncher extends Plugin {
 				}
 
 				const executablePath = this.getSyncthingExecutablePath();
-				this.syncthingInstance = spawn(executablePath, []);
+				
+				// Set up configuration directory
+				const configDir = `${this.getPluginAbsolutePath()}syncthing-config`;
+				if (typeof require !== 'undefined') {
+					const fs = require('fs');
+					if (!fs.existsSync(configDir)) {
+						fs.mkdirSync(configDir, { recursive: true });
+					}
+				}
+				
+				// Start Syncthing with configuration directory and no authentication for first-time setup
+				const args = [
+					'-home', configDir,
+					'-no-browser',
+					'-gui-address', '127.0.0.1:8384'
+				];
+				
+				this.syncthingInstance = spawn(executablePath, args);
 
 				this.syncthingInstance.stdout.on('data', (data: any) => {
 					console.log(`stdout: ${data}`);
@@ -375,15 +392,39 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	async isSyncthingRunning(): Promise<boolean> {
-		const config = {
-			headers: {
-				'X-API-Key': this.settings.syncthingApiKey,
+		try {
+			// For mobile/remote mode, always try with API key
+			if (this.isMobile || this.settings.mobileMode) {
+				const config = {
+					headers: {
+						'X-API-Key': this.settings.syncthingApiKey,
+					}
+				};
+				const response = await axios.get(this.getSyncthingURL(), config);
+				return response.status === 200;
 			}
-		};
-
-		return axios.get(this.getSyncthingURL() , config)
-			.then(response => { return true; })
-			.catch(error => { console.log("Syncthing status: Not running"); return false; });
+			
+			// For local instances, first try without API key (for initial setup)
+			try {
+				const response = await axios.get(this.getSyncthingURL());
+				return response.status === 200;
+			} catch (noAuthError) {
+				// If no-auth fails, try with API key (configured instance)
+				if (this.settings.syncthingApiKey) {
+					const config = {
+						headers: {
+							'X-API-Key': this.settings.syncthingApiKey,
+						}
+					};
+					const response = await axios.get(this.getSyncthingURL(), config);
+					return response.status === 200;
+				}
+				throw noAuthError;
+			}
+		} catch (error) {
+			console.log("Syncthing status: Not running");
+			return false;
+		}
 	}
 
 	checkDockerStatus(): boolean {
@@ -797,6 +838,37 @@ class SettingTab extends PluginSettingTab {
 						this.plugin.settings.remoteUrl : 
 						'http://127.0.0.1:8384';
 					window.open(url, '_blank');
+				}));
+
+		new Setting(binarySection)
+			.setName('Reset Configuration')
+			.setDesc('Reset Syncthing configuration (useful for first-time setup or fixing login issues)')
+			.addButton(button => button
+				.setButtonText('Reset Config')
+				.setTooltip('Delete Syncthing configuration to start fresh')
+				.onClick(async () => {
+					try {
+						// Stop Syncthing first
+						await this.plugin.stopSyncthing();
+						await new Promise(resolve => setTimeout(resolve, 1000));
+						
+						// Delete config directory
+						if (typeof require !== 'undefined') {
+							const fs = require('fs');
+							const path = require('path');
+							const configDir = `${this.plugin.getPluginAbsolutePath()}syncthing-config`;
+							
+							if (fs.existsSync(configDir)) {
+								// Remove directory recursively
+								fs.rmSync(configDir, { recursive: true, force: true });
+								new Notice('Syncthing configuration reset successfully! Start Syncthing to begin initial setup.');
+							} else {
+								new Notice('No configuration found to reset.');
+							}
+						}
+					} catch (error) {
+						new Notice(`Failed to reset configuration: ${error.message}`);
+					}
 				}));
 
 		// Configuration Section

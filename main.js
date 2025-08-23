@@ -2390,7 +2390,21 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
           }
         }
         const executablePath = this.getSyncthingExecutablePath();
-        this.syncthingInstance = spawn(executablePath, []);
+        const configDir = `${this.getPluginAbsolutePath()}syncthing-config`;
+        if (typeof require !== "undefined") {
+          const fs = require("fs");
+          if (!fs.existsSync(configDir)) {
+            fs.mkdirSync(configDir, { recursive: true });
+          }
+        }
+        const args = [
+          "-home",
+          configDir,
+          "-no-browser",
+          "-gui-address",
+          "127.0.0.1:8384"
+        ];
+        this.syncthingInstance = spawn(executablePath, args);
         this.syncthingInstance.stdout.on("data", (data) => {
           console.log(`stdout: ${data}`);
         });
@@ -2552,17 +2566,35 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     return this.settings.useDocker ? SYNCTHING_CORS_PROXY_CONTAINER_URL : SYNCTHING_CONTAINER_URL;
   }
   async isSyncthingRunning() {
-    const config = {
-      headers: {
-        "X-API-Key": this.settings.syncthingApiKey
+    try {
+      if (this.isMobile || this.settings.mobileMode) {
+        const config = {
+          headers: {
+            "X-API-Key": this.settings.syncthingApiKey
+          }
+        };
+        const response = await axios_default.get(this.getSyncthingURL(), config);
+        return response.status === 200;
       }
-    };
-    return axios_default.get(this.getSyncthingURL(), config).then((response) => {
-      return true;
-    }).catch((error) => {
+      try {
+        const response = await axios_default.get(this.getSyncthingURL());
+        return response.status === 200;
+      } catch (noAuthError) {
+        if (this.settings.syncthingApiKey) {
+          const config = {
+            headers: {
+              "X-API-Key": this.settings.syncthingApiKey
+            }
+          };
+          const response = await axios_default.get(this.getSyncthingURL(), config);
+          return response.status === 200;
+        }
+        throw noAuthError;
+      }
+    } catch (error) {
       console.log("Syncthing status: Not running");
       return false;
-    });
+    }
   }
   checkDockerStatus() {
     if (!exec) {
@@ -2834,6 +2866,25 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(binarySection).setName("Open Syncthing GUI").setDesc("Open Syncthing web interface in browser").addButton((button) => button.setButtonText("Open GUI").setTooltip("Open Syncthing web interface").onClick(async () => {
       const url = this.plugin.settings.mobileMode ? this.plugin.settings.remoteUrl : "http://127.0.0.1:8384";
       window.open(url, "_blank");
+    }));
+    new import_obsidian.Setting(binarySection).setName("Reset Configuration").setDesc("Reset Syncthing configuration (useful for first-time setup or fixing login issues)").addButton((button) => button.setButtonText("Reset Config").setTooltip("Delete Syncthing configuration to start fresh").onClick(async () => {
+      try {
+        await this.plugin.stopSyncthing();
+        await new Promise((resolve) => setTimeout(resolve, 1e3));
+        if (typeof require !== "undefined") {
+          const fs = require("fs");
+          const path = require("path");
+          const configDir = `${this.plugin.getPluginAbsolutePath()}syncthing-config`;
+          if (fs.existsSync(configDir)) {
+            fs.rmSync(configDir, { recursive: true, force: true });
+            new import_obsidian.Notice("Syncthing configuration reset successfully! Start Syncthing to begin initial setup.");
+          } else {
+            new import_obsidian.Notice("No configuration found to reset.");
+          }
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Failed to reset configuration: ${error.message}`);
+      }
     }));
     const configSection = containerEl.createDiv();
     configSection.createEl("h2", { text: "Configuration" });
