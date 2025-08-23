@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-syncthing-launcher",
-	"version": "1.0.3",
+	"version": "1.0.4",
 	"description": "Runs Syncthing as subprocess or Docker container and displays connection status in the status bar",
 	"main": "main.js",
 	"scripts": {
