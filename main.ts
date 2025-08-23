@@ -25,7 +25,6 @@ interface Settings {
 	useDocker: boolean;
 	remoteUrl: string;
 	mobileMode: boolean;
-	syncthingPort: number;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -36,7 +35,6 @@ const DEFAULT_SETTINGS: Settings = {
 	useDocker: false,
 	remoteUrl: 'http://127.0.0.1:8384',
 	mobileMode: false,
-	syncthingPort: 8384,
 }
 
 const UPDATE_INTERVAL = 5000;
@@ -176,11 +174,11 @@ export default class SyncthingLauncher extends Plugin {
 					}
 				}
 				
-				// Start Syncthing with configuration directory and custom port
+				// Start Syncthing with configuration directory (using default port 8384)
 				const args = [
 					'--home', configDir,
 					'--no-browser',
-					'--gui-address', `127.0.0.1:${this.settings.syncthingPort}`
+					'--gui-address', '127.0.0.1:8384'
 				];
 				
 				this.syncthingInstance = spawn(executablePath, args);
@@ -256,9 +254,10 @@ export default class SyncthingLauncher extends Plugin {
 
 	async pauseSyncthing(): Promise<boolean> {
 		try {
+			const baseUrl = this.getSyncthingURL();
+			
 			// Mobile mode or mobile platform - pause via API if possible
 			if (this.isMobile || this.settings.mobileMode) {
-				const baseUrl = this.settings.remoteUrl || `http://127.0.0.1:${this.settings.syncthingPort}`;
 				await axios.post(`${baseUrl}/rest/config/options`, 
 					{ ...await this.getSyncthingConfig(), options: { globalAnnEnabled: false } },
 					{ headers: { 'X-API-Key': this.settings.syncthingApiKey } }
@@ -268,7 +267,6 @@ export default class SyncthingLauncher extends Plugin {
 
 			// For local instances, we can't really "pause" - we would need to stop
 			// But we can pause all folders
-			const baseUrl = `http://127.0.0.1:${this.settings.syncthingPort}`;
 			const config = await this.getSyncthingConfig();
 			
 			// Pause all folders
@@ -289,9 +287,10 @@ export default class SyncthingLauncher extends Plugin {
 
 	async resumeSyncthing(): Promise<boolean> {
 		try {
+			const baseUrl = this.getSyncthingURL();
+			
 			// Mobile mode or mobile platform - resume via API if possible  
 			if (this.isMobile || this.settings.mobileMode) {
-				const baseUrl = this.settings.remoteUrl || `http://127.0.0.1:${this.settings.syncthingPort}`;
 				await axios.post(`${baseUrl}/rest/config/options`,
 					{ ...await this.getSyncthingConfig(), options: { globalAnnEnabled: true } },
 					{ headers: { 'X-API-Key': this.settings.syncthingApiKey } }
@@ -300,7 +299,6 @@ export default class SyncthingLauncher extends Plugin {
 			}
 
 			// For local instances, resume all folders
-			const baseUrl = `http://127.0.0.1:${this.settings.syncthingPort}`;
 			const config = await this.getSyncthingConfig();
 			
 			// Resume all folders
@@ -320,9 +318,7 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	async getSyncthingConfig(): Promise<any> {
-		const baseUrl = (this.isMobile || this.settings.mobileMode) ? 
-			(this.settings.remoteUrl || `http://127.0.0.1:${this.settings.syncthingPort}`) : 
-			`http://127.0.0.1:${this.settings.syncthingPort}`;
+		const baseUrl = this.getSyncthingURL();
 			
 		const response = await axios.get(`${baseUrl}/rest/config`, {
 			headers: { 'X-API-Key': this.settings.syncthingApiKey }
@@ -389,16 +385,19 @@ export default class SyncthingLauncher extends Plugin {
 			return this.settings.remoteUrl;
 		}
 		
-		// Desktop mode - Docker or local with custom port
+		// Desktop mode - Docker or local
 		if (this.settings.useDocker) {
 			return SYNCTHING_CORS_PROXY_CONTAINER_URL;
 		} else {
-			return `http://127.0.0.1:${this.settings.syncthingPort}`;
+			// Use remoteUrl setting if configured, otherwise default localhost
+			return this.settings.remoteUrl;
 		}
 	}
 
 	async isSyncthingRunning(): Promise<boolean> {
 		try {
+			const url = this.getSyncthingURL();
+			
 			// For mobile/remote mode, always try with API key
 			if (this.isMobile || this.settings.mobileMode) {
 				const config = {
@@ -406,28 +405,45 @@ export default class SyncthingLauncher extends Plugin {
 						'X-API-Key': this.settings.syncthingApiKey,
 					}
 				};
-				const response = await axios.get(this.getSyncthingURL(), config);
+				const response = await axios.get(url, config);
 				return response.status === 200;
 			}
 			
 			// For local instances, first try without API key (for initial setup)
 			try {
-				const response = await axios.get(this.getSyncthingURL());
+				const response = await axios.get(url);
 				return response.status === 200;
-			} catch (noAuthError) {
+			} catch (noAuthError: any) {
+				// Check if it's actually a successful response but treated as error
+				if (noAuthError.response && noAuthError.response.status === 200) {
+					return true;
+				}
+				
 				// If no-auth fails, try with API key (configured instance)
 				if (this.settings.syncthingApiKey) {
-					const config = {
-						headers: {
-							'X-API-Key': this.settings.syncthingApiKey,
+					try {
+						const config = {
+							headers: {
+								'X-API-Key': this.settings.syncthingApiKey,
+							}
+						};
+						const response = await axios.get(url, config);
+						return response.status === 200;
+					} catch (authError: any) {
+						// Check if it's actually a successful response but treated as error
+						if (authError.response && authError.response.status === 200) {
+							return true;
 						}
-					};
-					const response = await axios.get(this.getSyncthingURL(), config);
-					return response.status === 200;
+						throw authError;
+					}
 				}
 				throw noAuthError;
 			}
-		} catch (error) {
+		} catch (error: any) {
+			// One more check for hidden success responses
+			if (error.response && error.response.status === 200) {
+				return true;
+			}
 			console.log("Syncthing status: Not running");
 			return false;
 		}
@@ -840,9 +856,7 @@ class SettingTab extends PluginSettingTab {
 				.setButtonText('Open GUI')
 				.setTooltip('Open Syncthing web interface')
 				.onClick(async () => {
-					const url = this.plugin.settings.mobileMode ? 
-						this.plugin.settings.remoteUrl : 
-						`http://127.0.0.1:${this.plugin.settings.syncthingPort}`;
+					const url = this.plugin.getSyncthingURL();
 					window.open(url, '_blank');
 				}));
 
@@ -939,20 +953,6 @@ class SettingTab extends PluginSettingTab {
 				.onChange(async (value) => {
 					this.plugin.settings.remoteUrl = value;
 					await this.plugin.saveSettings();
-				}));
-
-		new Setting(configSection)
-			.setName('Local Syncthing Port')
-			.setDesc('Port for local Syncthing GUI (desktop mode only, requires restart)')
-			.addText(text => text
-				.setPlaceholder('8384')
-				.setValue(this.plugin.settings.syncthingPort.toString())
-				.onChange(async (value) => {
-					const port = parseInt(value) || 8384;
-					if (port > 0 && port <= 65535) {
-						this.plugin.settings.syncthingPort = port;
-						await this.plugin.saveSettings();
-					}
 				}));
 
 		new Setting(configSection)

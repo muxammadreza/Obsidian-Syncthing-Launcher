@@ -2297,8 +2297,7 @@ var DEFAULT_SETTINGS = {
   stopOnObsidianClose: false,
   useDocker: false,
   remoteUrl: "http://127.0.0.1:8384",
-  mobileMode: false,
-  syncthingPort: 8384
+  mobileMode: false
 };
 var UPDATE_INTERVAL = 5e3;
 var SYNCTHING_CORS_PROXY_CONTAINER_URL = "http://127.0.0.1:8380/";
@@ -2402,7 +2401,7 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
           configDir,
           "--no-browser",
           "--gui-address",
-          `127.0.0.1:${this.settings.syncthingPort}`
+          "127.0.0.1:8384"
         ];
         this.syncthingInstance = spawn(executablePath, args);
         this.syncthingInstance.stdout.on("data", (data) => {
@@ -2464,16 +2463,15 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
   }
   async pauseSyncthing() {
     try {
+      const baseUrl = this.getSyncthingURL();
       if (this.isMobile || this.settings.mobileMode) {
-        const baseUrl2 = this.settings.remoteUrl || `http://127.0.0.1:${this.settings.syncthingPort}`;
         await axios_default.post(
-          `${baseUrl2}/rest/config/options`,
+          `${baseUrl}/rest/config/options`,
           { ...await this.getSyncthingConfig(), options: { globalAnnEnabled: false } },
           { headers: { "X-API-Key": this.settings.syncthingApiKey } }
         );
         return true;
       }
-      const baseUrl = `http://127.0.0.1:${this.settings.syncthingPort}`;
       const config = await this.getSyncthingConfig();
       for (const folder of config.folders) {
         folder.paused = true;
@@ -2489,16 +2487,15 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
   }
   async resumeSyncthing() {
     try {
+      const baseUrl = this.getSyncthingURL();
       if (this.isMobile || this.settings.mobileMode) {
-        const baseUrl2 = this.settings.remoteUrl || `http://127.0.0.1:${this.settings.syncthingPort}`;
         await axios_default.post(
-          `${baseUrl2}/rest/config/options`,
+          `${baseUrl}/rest/config/options`,
           { ...await this.getSyncthingConfig(), options: { globalAnnEnabled: true } },
           { headers: { "X-API-Key": this.settings.syncthingApiKey } }
         );
         return true;
       }
-      const baseUrl = `http://127.0.0.1:${this.settings.syncthingPort}`;
       const config = await this.getSyncthingConfig();
       for (const folder of config.folders) {
         folder.paused = false;
@@ -2513,7 +2510,7 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     }
   }
   async getSyncthingConfig() {
-    const baseUrl = this.isMobile || this.settings.mobileMode ? this.settings.remoteUrl || `http://127.0.0.1:${this.settings.syncthingPort}` : `http://127.0.0.1:${this.settings.syncthingPort}`;
+    const baseUrl = this.getSyncthingURL();
     const response = await axios_default.get(`${baseUrl}/rest/config`, {
       headers: { "X-API-Key": this.settings.syncthingApiKey }
     });
@@ -2566,36 +2563,50 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     if (this.settings.useDocker) {
       return SYNCTHING_CORS_PROXY_CONTAINER_URL;
     } else {
-      return `http://127.0.0.1:${this.settings.syncthingPort}`;
+      return this.settings.remoteUrl;
     }
   }
   async isSyncthingRunning() {
     try {
+      const url = this.getSyncthingURL();
       if (this.isMobile || this.settings.mobileMode) {
         const config = {
           headers: {
             "X-API-Key": this.settings.syncthingApiKey
           }
         };
-        const response = await axios_default.get(this.getSyncthingURL(), config);
+        const response = await axios_default.get(url, config);
         return response.status === 200;
       }
       try {
-        const response = await axios_default.get(this.getSyncthingURL());
+        const response = await axios_default.get(url);
         return response.status === 200;
       } catch (noAuthError) {
+        if (noAuthError.response && noAuthError.response.status === 200) {
+          return true;
+        }
         if (this.settings.syncthingApiKey) {
-          const config = {
-            headers: {
-              "X-API-Key": this.settings.syncthingApiKey
+          try {
+            const config = {
+              headers: {
+                "X-API-Key": this.settings.syncthingApiKey
+              }
+            };
+            const response = await axios_default.get(url, config);
+            return response.status === 200;
+          } catch (authError) {
+            if (authError.response && authError.response.status === 200) {
+              return true;
             }
-          };
-          const response = await axios_default.get(this.getSyncthingURL(), config);
-          return response.status === 200;
+            throw authError;
+          }
         }
         throw noAuthError;
       }
     } catch (error) {
+      if (error.response && error.response.status === 200) {
+        return true;
+      }
       console.log("Syncthing status: Not running");
       return false;
     }
@@ -2868,7 +2879,7 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
       }
     }));
     new import_obsidian.Setting(binarySection).setName("Open Syncthing GUI").setDesc("Open Syncthing web interface in browser").addButton((button) => button.setButtonText("Open GUI").setTooltip("Open Syncthing web interface").onClick(async () => {
-      const url = this.plugin.settings.mobileMode ? this.plugin.settings.remoteUrl : `http://127.0.0.1:${this.plugin.settings.syncthingPort}`;
+      const url = this.plugin.getSyncthingURL();
       window.open(url, "_blank");
     }));
     new import_obsidian.Setting(binarySection).setName("Reset Configuration").setDesc("Reset Syncthing configuration (useful for first-time setup or fixing login issues)").addButton((button) => button.setButtonText("Reset Config").setTooltip("Delete Syncthing configuration to start fresh").onClick(async () => {
@@ -2915,13 +2926,6 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(configSection).setName("Remote Syncthing URL").setDesc("URL of remote Syncthing instance (used in mobile mode or when connecting to remote server)").addText((text) => text.setPlaceholder("http://192.168.1.100:8384").setValue(this.plugin.settings.remoteUrl).onChange(async (value) => {
       this.plugin.settings.remoteUrl = value;
       await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(configSection).setName("Local Syncthing Port").setDesc("Port for local Syncthing GUI (desktop mode only, requires restart)").addText((text) => text.setPlaceholder("8384").setValue(this.plugin.settings.syncthingPort.toString()).onChange(async (value) => {
-      const port = parseInt(value) || 8384;
-      if (port > 0 && port <= 65535) {
-        this.plugin.settings.syncthingPort = port;
-        await this.plugin.saveSettings();
-      }
     }));
     new import_obsidian.Setting(configSection).setName("Use Docker").setDesc("Run Syncthing in Docker container instead of running it locally (desktop only)").addToggle((toggle) => toggle.setValue(this.plugin.settings.useDocker).onChange(async (value) => {
       this.plugin.settings.useDocker = value;
