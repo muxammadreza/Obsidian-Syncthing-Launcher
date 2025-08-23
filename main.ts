@@ -124,7 +124,7 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	async startSyncthing() {
-		this.isSyncthingRunning().then(isRunning => {
+		this.isSyncthingRunning().then(async isRunning => {
 			// Check if already running
 			if (isRunning) {
 				console.log('Syncthing is already running');
@@ -150,6 +150,17 @@ export default class SyncthingLauncher extends Plugin {
 				if (!spawn) {
 					new Notice('Local Syncthing execution not available on mobile platforms', 5000);
 					return;
+				}
+
+				// Check if executable exists
+				const executableExists = await this.checkExecutableExists();
+				if (!executableExists) {
+					new Notice('Syncthing executable missing. Attempting to download...', 5000);
+					const downloadSuccess = await this.downloadSyncthingExecutable();
+					if (!downloadSuccess) {
+						new Notice('Auto-download failed. Please manually download syncthing-executables.tar.gz from the GitHub release or enable Mobile Mode.', 15000);
+						return;
+					}
 				}
 
 				const executablePath = this.getSyncthingExecutablePath();
@@ -353,6 +364,91 @@ export default class SyncthingLauncher extends Plugin {
 				this.statusBarLastSyncTextItem.setText(`Last sync: ${this.syncthingLastSyncDate}`);
 			}
 		});
+	}
+
+	async checkExecutableExists(): Promise<boolean> {
+		if (!this.app.vault.adapter || this.isMobile || this.settings.mobileMode) {
+			return true; // Not needed on mobile
+		}
+
+		try {
+			const executablePath = this.getSyncthingExecutablePath();
+			
+			// Check if file exists using Node.js fs for desktop
+			if (typeof require !== 'undefined') {
+				try {
+					const fs = require('fs');
+					return fs.existsSync(executablePath);
+				} catch (error) {
+					console.error('Error checking file with fs:', error);
+				}
+			}
+			
+			return false;
+		} catch (error) {
+			console.error('Error checking executable:', error);
+			return false;
+		}
+	}
+
+	async downloadSyncthingExecutable(): Promise<boolean> {
+		try {
+			new Notice('Downloading Syncthing executable... Please wait.', 8000);
+			
+			// Determine platform and file name
+			let fileName: string;
+			if (process.platform === 'win32') {
+				fileName = 'syncthing-windows.exe';
+			} else if (process.platform === 'darwin') {
+				fileName = 'syncthing-macos';
+			} else {
+				fileName = 'syncthing-linux';
+			}
+
+			// Download URL from our GitHub release
+			const downloadUrl = `https://github.com/muxammadreza/Obsidian-Syncthing-Launcher/releases/download/v${this.manifest.version}/${fileName}`;
+			
+			// Download the file
+			const response = await fetch(downloadUrl);
+			if (!response.ok) {
+				throw new Error(`Download failed: ${response.statusText}`);
+			}
+
+			const arrayBuffer = await response.arrayBuffer();
+			const data = new Uint8Array(arrayBuffer);
+
+			// Create syncthing directory if it doesn't exist
+			const syncthingDir = `${this.getPluginAbsolutePath()}syncthing`;
+			
+			if (typeof require !== 'undefined') {
+				const fs = require('fs');
+				const path = require('path');
+				
+				// Create directory if it doesn't exist
+				if (!fs.existsSync(syncthingDir)) {
+					fs.mkdirSync(syncthingDir, { recursive: true });
+				}
+
+				// Write the executable file
+				const executablePath = this.getSyncthingExecutablePath();
+				fs.writeFileSync(executablePath, data);
+				
+				// Make executable on Unix systems
+				if (process.platform !== 'win32') {
+					fs.chmodSync(executablePath, '755');
+				}
+				
+				new Notice('Syncthing executable downloaded and installed successfully!', 5000);
+				return true;
+			} else {
+				throw new Error('File system operations not available');
+			}
+
+		} catch (error) {
+			console.error('Failed to download Syncthing executable:', error);
+			new Notice(`Failed to download Syncthing executable: ${error.message}. Please download manually from GitHub release.`, 10000);
+			return false;
+		}
 	}
 
 	detectMobilePlatform(): boolean {
