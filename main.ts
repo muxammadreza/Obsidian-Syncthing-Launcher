@@ -178,9 +178,9 @@ export default class SyncthingLauncher extends Plugin {
 				
 				// Start Syncthing with configuration directory and custom port
 				const args = [
-					'-home', configDir,
-					'-no-browser',
-					'-gui-address', `127.0.0.1:${this.settings.syncthingPort}`
+					'--home', configDir,
+					'--no-browser',
+					'--gui-address', `127.0.0.1:${this.settings.syncthingPort}`
 				];
 				
 				this.syncthingInstance = spawn(executablePath, args);

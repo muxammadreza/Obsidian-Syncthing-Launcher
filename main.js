@@ -2398,10 +2398,10 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
           }
         }
         const args = [
-          "-home",
+          "--home",
           configDir,
-          "-no-browser",
-          "-gui-address",
+          "--no-browser",
+          "--gui-address",
           `127.0.0.1:${this.settings.syncthingPort}`
         ];
         this.syncthingInstance = spawn(executablePath, args);
