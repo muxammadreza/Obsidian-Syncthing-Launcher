@@ -2448,6 +2448,63 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
       }
     }
   }
+  async pauseSyncthing() {
+    try {
+      if (this.isMobile || this.settings.mobileMode) {
+        const baseUrl2 = this.settings.remoteUrl || "http://127.0.0.1:8384";
+        await axios_default.post(
+          `${baseUrl2}/rest/config/options`,
+          { ...await this.getSyncthingConfig(), options: { globalAnnEnabled: false } },
+          { headers: { "X-API-Key": this.settings.syncthingApiKey } }
+        );
+        return true;
+      }
+      const baseUrl = "http://127.0.0.1:8384";
+      const config = await this.getSyncthingConfig();
+      for (const folder of config.folders) {
+        folder.paused = true;
+      }
+      await axios_default.post(`${baseUrl}/rest/config`, config, {
+        headers: { "X-API-Key": this.settings.syncthingApiKey }
+      });
+      return true;
+    } catch (error) {
+      console.error("Failed to pause Syncthing:", error);
+      return false;
+    }
+  }
+  async resumeSyncthing() {
+    try {
+      if (this.isMobile || this.settings.mobileMode) {
+        const baseUrl2 = this.settings.remoteUrl || "http://127.0.0.1:8384";
+        await axios_default.post(
+          `${baseUrl2}/rest/config/options`,
+          { ...await this.getSyncthingConfig(), options: { globalAnnEnabled: true } },
+          { headers: { "X-API-Key": this.settings.syncthingApiKey } }
+        );
+        return true;
+      }
+      const baseUrl = "http://127.0.0.1:8384";
+      const config = await this.getSyncthingConfig();
+      for (const folder of config.folders) {
+        folder.paused = false;
+      }
+      await axios_default.post(`${baseUrl}/rest/config`, config, {
+        headers: { "X-API-Key": this.settings.syncthingApiKey }
+      });
+      return true;
+    } catch (error) {
+      console.error("Failed to resume Syncthing:", error);
+      return false;
+    }
+  }
+  async getSyncthingConfig() {
+    const baseUrl = this.isMobile || this.settings.mobileMode ? this.settings.remoteUrl || "http://127.0.0.1:8384" : "http://127.0.0.1:8384";
+    const response = await axios_default.get(`${baseUrl}/rest/config`, {
+      headers: { "X-API-Key": this.settings.syncthingApiKey }
+    });
+    return response.data;
+  }
   async startSyncthingDockerStack() {
     if (!exec) {
       new import_obsidian.Notice("Docker operations not available on mobile platforms", 5e3);
@@ -2672,31 +2729,139 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("Syncthing API key").setDesc("API key of Syncthing instance (in Syncthing GUI -> Actions -> Settings)").addText((text) => text.setPlaceholder("Enter Syncthing API key").setValue(this.plugin.settings.syncthingApiKey).onChange(async (value) => {
+    const statusSection = containerEl.createDiv();
+    statusSection.createEl("h2", { text: "Syncthing Control Panel" });
+    const statusSetting = new import_obsidian.Setting(statusSection).setName("Syncthing Status").setDesc("Current status of Syncthing service");
+    const statusButton = statusSetting.addButton((button) => button.setButtonText("Check Status").setTooltip("Check if Syncthing is running").onClick(async () => {
+      const isRunning = await this.plugin.isSyncthingRunning();
+      const status = isRunning ? "\u2705 Running" : "\u274C Not running";
+      new import_obsidian.Notice(`Syncthing status: ${status}`);
+      statusIndicator.setText(status);
+    }));
+    const statusIndicator = statusSetting.settingEl.createSpan();
+    statusIndicator.style.marginLeft = "10px";
+    statusIndicator.style.fontWeight = "bold";
+    statusIndicator.setText("\u2753 Unknown");
+    setTimeout(async () => {
+      try {
+        const isRunning = await this.plugin.isSyncthingRunning();
+        statusIndicator.setText(isRunning ? "\u2705 Running" : "\u274C Not running");
+      } catch (error) {
+        statusIndicator.setText("\u274C Error checking status");
+      }
+    }, 500);
+    new import_obsidian.Setting(statusSection).setName("Start Syncthing").setDesc("Start the Syncthing service").addButton((button) => button.setButtonText("Start").setTooltip("Start Syncthing service").onClick(async () => {
+      try {
+        await this.plugin.startSyncthing();
+        new import_obsidian.Notice("Syncthing started successfully!");
+        setTimeout(async () => {
+          const isRunning = await this.plugin.isSyncthingRunning();
+          statusIndicator.setText(isRunning ? "\u2705 Running" : "\u274C Not running");
+        }, 2e3);
+      } catch (error) {
+        new import_obsidian.Notice(`Failed to start Syncthing: ${error.message}`);
+      }
+    }));
+    new import_obsidian.Setting(statusSection).setName("Stop Syncthing").setDesc("Stop the Syncthing service").addButton((button) => button.setButtonText("Stop").setTooltip("Stop Syncthing service").onClick(async () => {
+      try {
+        await this.plugin.stopSyncthing();
+        new import_obsidian.Notice("Syncthing stopped successfully!");
+        statusIndicator.setText("\u274C Not running");
+      } catch (error) {
+        new import_obsidian.Notice(`Failed to stop Syncthing: ${error.message}`);
+      }
+    }));
+    new import_obsidian.Setting(statusSection).setName("Restart Syncthing").setDesc("Restart the Syncthing service").addButton((button) => button.setButtonText("Restart").setTooltip("Restart Syncthing service").onClick(async () => {
+      try {
+        await this.plugin.stopSyncthing();
+        await new Promise((resolve) => setTimeout(resolve, 1e3));
+        await this.plugin.startSyncthing();
+        new import_obsidian.Notice("Syncthing restarted successfully!");
+        setTimeout(async () => {
+          const isRunning = await this.plugin.isSyncthingRunning();
+          statusIndicator.setText(isRunning ? "\u2705 Running" : "\u274C Not running");
+        }, 2e3);
+      } catch (error) {
+        new import_obsidian.Notice(`Failed to restart Syncthing: ${error.message}`);
+      }
+    }));
+    new import_obsidian.Setting(statusSection).setName("Pause Syncthing").setDesc("Pause synchronization (keeps Syncthing running but stops syncing)").addButton((button) => button.setButtonText("Pause").setTooltip("Pause synchronization").onClick(async () => {
+      try {
+        const success = await this.plugin.pauseSyncthing();
+        if (success) {
+          new import_obsidian.Notice("Syncthing paused successfully!");
+        } else {
+          new import_obsidian.Notice("Failed to pause Syncthing");
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Failed to pause Syncthing: ${error.message}`);
+      }
+    }));
+    new import_obsidian.Setting(statusSection).setName("Resume Syncthing").setDesc("Resume synchronization after pausing").addButton((button) => button.setButtonText("Resume").setTooltip("Resume synchronization").onClick(async () => {
+      try {
+        const success = await this.plugin.resumeSyncthing();
+        if (success) {
+          new import_obsidian.Notice("Syncthing resumed successfully!");
+        } else {
+          new import_obsidian.Notice("Failed to resume Syncthing");
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Failed to resume Syncthing: ${error.message}`);
+      }
+    }));
+    const binarySection = containerEl.createDiv();
+    binarySection.createEl("h2", { text: "Binary Management" });
+    new import_obsidian.Setting(binarySection).setName("Check Executable").setDesc("Check if Syncthing executable exists and is accessible").addButton((button) => button.setButtonText("Check").setTooltip("Verify Syncthing executable").onClick(async () => {
+      const exists = await this.plugin.checkExecutableExists();
+      if (exists) {
+        new import_obsidian.Notice("\u2705 Syncthing executable found and accessible");
+      } else {
+        new import_obsidian.Notice("\u274C Syncthing executable not found");
+      }
+    }));
+    new import_obsidian.Setting(binarySection).setName("Download Executable").setDesc("Download the Syncthing executable for your platform").addButton((button) => button.setButtonText("Download").setTooltip("Download Syncthing binary").onClick(async () => {
+      try {
+        const success = await this.plugin.downloadSyncthingExecutable();
+        if (success) {
+          new import_obsidian.Notice("\u2705 Syncthing executable downloaded successfully!");
+        } else {
+          new import_obsidian.Notice("\u274C Failed to download Syncthing executable");
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Download failed: ${error.message}`);
+      }
+    }));
+    new import_obsidian.Setting(binarySection).setName("Open Syncthing GUI").setDesc("Open Syncthing web interface in browser").addButton((button) => button.setButtonText("Open GUI").setTooltip("Open Syncthing web interface").onClick(async () => {
+      const url = this.plugin.settings.mobileMode ? this.plugin.settings.remoteUrl : "http://127.0.0.1:8384";
+      window.open(url, "_blank");
+    }));
+    const configSection = containerEl.createDiv();
+    configSection.createEl("h2", { text: "Configuration" });
+    new import_obsidian.Setting(configSection).setName("Syncthing API key").setDesc("API key of Syncthing instance (in Syncthing GUI -> Actions -> Settings)").addText((text) => text.setPlaceholder("Enter Syncthing API key").setValue(this.plugin.settings.syncthingApiKey).onChange(async (value) => {
       this.plugin.settings.syncthingApiKey = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Vault folder ID").setDesc("ID of the folder in which the vault is stored (in Syncthing GUI -> Folders -> Vault folder)").addText((text) => text.setPlaceholder("Enter vault folder ID").setValue(this.plugin.settings.vaultFolderID).onChange(async (value) => {
+    new import_obsidian.Setting(configSection).setName("Vault folder ID").setDesc("ID of the folder in which the vault is stored (in Syncthing GUI -> Folders -> Vault folder)").addText((text) => text.setPlaceholder("Enter vault folder ID").setValue(this.plugin.settings.vaultFolderID).onChange(async (value) => {
       this.plugin.settings.vaultFolderID = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Start on Obsidian open").setDesc("Start Syncthing when Obsidian opens").addToggle((toggle) => toggle.setValue(this.plugin.settings.startOnObsidianOpen).onChange(async (value) => {
+    new import_obsidian.Setting(configSection).setName("Start on Obsidian open").setDesc("Start Syncthing when Obsidian opens").addToggle((toggle) => toggle.setValue(this.plugin.settings.startOnObsidianOpen).onChange(async (value) => {
       this.plugin.settings.startOnObsidianOpen = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Stop on Obsidian close").setDesc("Stop Syncthing when Obsidian closes").addToggle((toggle) => toggle.setValue(this.plugin.settings.stopOnObsidianClose).onChange(async (value) => {
+    new import_obsidian.Setting(configSection).setName("Stop on Obsidian close").setDesc("Stop Syncthing when Obsidian closes").addToggle((toggle) => toggle.setValue(this.plugin.settings.stopOnObsidianClose).onChange(async (value) => {
       this.plugin.settings.stopOnObsidianClose = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Mobile Mode").setDesc("Enable mobile mode to connect to remote Syncthing instead of running locally (auto-detected)").addToggle((toggle) => toggle.setValue(this.plugin.settings.mobileMode).onChange(async (value) => {
+    new import_obsidian.Setting(configSection).setName("Mobile Mode").setDesc("Enable mobile mode to connect to remote Syncthing instead of running locally (auto-detected)").addToggle((toggle) => toggle.setValue(this.plugin.settings.mobileMode).onChange(async (value) => {
       this.plugin.settings.mobileMode = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Remote Syncthing URL").setDesc("URL of remote Syncthing instance (used in mobile mode or when connecting to remote server)").addText((text) => text.setPlaceholder("http://192.168.1.100:8384").setValue(this.plugin.settings.remoteUrl).onChange(async (value) => {
+    new import_obsidian.Setting(configSection).setName("Remote Syncthing URL").setDesc("URL of remote Syncthing instance (used in mobile mode or when connecting to remote server)").addText((text) => text.setPlaceholder("http://192.168.1.100:8384").setValue(this.plugin.settings.remoteUrl).onChange(async (value) => {
       this.plugin.settings.remoteUrl = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Use Docker").setDesc("Run Syncthing in Docker container instead of running it locally (desktop only)").addToggle((toggle) => toggle.setValue(this.plugin.settings.useDocker).onChange(async (value) => {
+    new import_obsidian.Setting(configSection).setName("Use Docker").setDesc("Run Syncthing in Docker container instead of running it locally (desktop only)").addToggle((toggle) => toggle.setValue(this.plugin.settings.useDocker).onChange(async (value) => {
       this.plugin.settings.useDocker = value;
       await this.plugin.saveSettings();
     }));

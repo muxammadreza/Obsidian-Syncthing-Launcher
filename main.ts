@@ -235,6 +235,83 @@ export default class SyncthingLauncher extends Plugin {
 		}
 	}
 
+	async pauseSyncthing(): Promise<boolean> {
+		try {
+			// Mobile mode or mobile platform - pause via API if possible
+			if (this.isMobile || this.settings.mobileMode) {
+				const baseUrl = this.settings.remoteUrl || 'http://127.0.0.1:8384';
+				await axios.post(`${baseUrl}/rest/config/options`, 
+					{ ...await this.getSyncthingConfig(), options: { globalAnnEnabled: false } },
+					{ headers: { 'X-API-Key': this.settings.syncthingApiKey } }
+				);
+				return true;
+			}
+
+			// For local instances, we can't really "pause" - we would need to stop
+			// But we can pause all folders
+			const baseUrl = 'http://127.0.0.1:8384';
+			const config = await this.getSyncthingConfig();
+			
+			// Pause all folders
+			for (const folder of config.folders) {
+				folder.paused = true;
+			}
+			
+			await axios.post(`${baseUrl}/rest/config`, config, {
+				headers: { 'X-API-Key': this.settings.syncthingApiKey }
+			});
+			
+			return true;
+		} catch (error) {
+			console.error('Failed to pause Syncthing:', error);
+			return false;
+		}
+	}
+
+	async resumeSyncthing(): Promise<boolean> {
+		try {
+			// Mobile mode or mobile platform - resume via API if possible  
+			if (this.isMobile || this.settings.mobileMode) {
+				const baseUrl = this.settings.remoteUrl || 'http://127.0.0.1:8384';
+				await axios.post(`${baseUrl}/rest/config/options`,
+					{ ...await this.getSyncthingConfig(), options: { globalAnnEnabled: true } },
+					{ headers: { 'X-API-Key': this.settings.syncthingApiKey } }
+				);
+				return true;
+			}
+
+			// For local instances, resume all folders
+			const baseUrl = 'http://127.0.0.1:8384';
+			const config = await this.getSyncthingConfig();
+			
+			// Resume all folders
+			for (const folder of config.folders) {
+				folder.paused = false;
+			}
+			
+			await axios.post(`${baseUrl}/rest/config`, config, {
+				headers: { 'X-API-Key': this.settings.syncthingApiKey }
+			});
+			
+			return true;
+		} catch (error) {
+			console.error('Failed to resume Syncthing:', error);
+			return false;
+		}
+	}
+
+	async getSyncthingConfig(): Promise<any> {
+		const baseUrl = (this.isMobile || this.settings.mobileMode) ? 
+			(this.settings.remoteUrl || 'http://127.0.0.1:8384') : 
+			'http://127.0.0.1:8384';
+			
+		const response = await axios.get(`${baseUrl}/rest/config`, {
+			headers: { 'X-API-Key': this.settings.syncthingApiKey }
+		});
+		
+		return response.data;
+	}
+
 	async startSyncthingDockerStack() {
 		if (!exec) {
 			new Notice('Docker operations not available on mobile platforms', 5000);
@@ -541,7 +618,192 @@ class SettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		new Setting(containerEl)
+		// Status and Control Section
+		const statusSection = containerEl.createDiv();
+		statusSection.createEl('h2', {text: 'Syncthing Control Panel'});
+
+		// Status display
+		const statusSetting = new Setting(statusSection)
+			.setName('Syncthing Status')
+			.setDesc('Current status of Syncthing service');
+		
+		const statusButton = statusSetting.addButton(button => button
+			.setButtonText('Check Status')
+			.setTooltip('Check if Syncthing is running')
+			.onClick(async () => {
+				const isRunning = await this.plugin.isSyncthingRunning();
+				const status = isRunning ? '✅ Running' : '❌ Not running';
+				new Notice(`Syncthing status: ${status}`);
+				statusIndicator.setText(status);
+			}));
+
+		const statusIndicator = statusSetting.settingEl.createSpan();
+		statusIndicator.style.marginLeft = '10px';
+		statusIndicator.style.fontWeight = 'bold';
+		statusIndicator.setText('❓ Unknown');
+
+		// Check initial status
+		setTimeout(async () => {
+			try {
+				const isRunning = await this.plugin.isSyncthingRunning();
+				statusIndicator.setText(isRunning ? '✅ Running' : '❌ Not running');
+			} catch (error) {
+				statusIndicator.setText('❌ Error checking status');
+			}
+		}, 500);
+
+		// Control buttons
+		new Setting(statusSection)
+			.setName('Start Syncthing')
+			.setDesc('Start the Syncthing service')
+			.addButton(button => button
+				.setButtonText('Start')
+				.setTooltip('Start Syncthing service')
+				.onClick(async () => {
+					try {
+						await this.plugin.startSyncthing();
+						new Notice('Syncthing started successfully!');
+						// Update status after a short delay
+						setTimeout(async () => {
+							const isRunning = await this.plugin.isSyncthingRunning();
+							statusIndicator.setText(isRunning ? '✅ Running' : '❌ Not running');
+						}, 2000);
+					} catch (error) {
+						new Notice(`Failed to start Syncthing: ${error.message}`);
+					}
+				}));
+
+		new Setting(statusSection)
+			.setName('Stop Syncthing')
+			.setDesc('Stop the Syncthing service')
+			.addButton(button => button
+				.setButtonText('Stop')
+				.setTooltip('Stop Syncthing service')
+				.onClick(async () => {
+					try {
+						await this.plugin.stopSyncthing();
+						new Notice('Syncthing stopped successfully!');
+						statusIndicator.setText('❌ Not running');
+					} catch (error) {
+						new Notice(`Failed to stop Syncthing: ${error.message}`);
+					}
+				}));
+
+		new Setting(statusSection)
+			.setName('Restart Syncthing')
+			.setDesc('Restart the Syncthing service')
+			.addButton(button => button
+				.setButtonText('Restart')
+				.setTooltip('Restart Syncthing service')
+				.onClick(async () => {
+					try {
+						await this.plugin.stopSyncthing();
+						await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+						await this.plugin.startSyncthing();
+						new Notice('Syncthing restarted successfully!');
+						setTimeout(async () => {
+							const isRunning = await this.plugin.isSyncthingRunning();
+							statusIndicator.setText(isRunning ? '✅ Running' : '❌ Not running');
+						}, 2000);
+					} catch (error) {
+						new Notice(`Failed to restart Syncthing: ${error.message}`);
+					}
+				}));
+
+		new Setting(statusSection)
+			.setName('Pause Syncthing')
+			.setDesc('Pause synchronization (keeps Syncthing running but stops syncing)')
+			.addButton(button => button
+				.setButtonText('Pause')
+				.setTooltip('Pause synchronization')
+				.onClick(async () => {
+					try {
+						const success = await this.plugin.pauseSyncthing();
+						if (success) {
+							new Notice('Syncthing paused successfully!');
+						} else {
+							new Notice('Failed to pause Syncthing');
+						}
+					} catch (error) {
+						new Notice(`Failed to pause Syncthing: ${error.message}`);
+					}
+				}));
+
+		new Setting(statusSection)
+			.setName('Resume Syncthing')
+			.setDesc('Resume synchronization after pausing')
+			.addButton(button => button
+				.setButtonText('Resume')
+				.setTooltip('Resume synchronization')
+				.onClick(async () => {
+					try {
+						const success = await this.plugin.resumeSyncthing();
+						if (success) {
+							new Notice('Syncthing resumed successfully!');
+						} else {
+							new Notice('Failed to resume Syncthing');
+						}
+					} catch (error) {
+						new Notice(`Failed to resume Syncthing: ${error.message}`);
+					}
+				}));
+
+		// Binary Management Section
+		const binarySection = containerEl.createDiv();
+		binarySection.createEl('h2', {text: 'Binary Management'});
+
+		new Setting(binarySection)
+			.setName('Check Executable')
+			.setDesc('Check if Syncthing executable exists and is accessible')
+			.addButton(button => button
+				.setButtonText('Check')
+				.setTooltip('Verify Syncthing executable')
+				.onClick(async () => {
+					const exists = await this.plugin.checkExecutableExists();
+					if (exists) {
+						new Notice('✅ Syncthing executable found and accessible');
+					} else {
+						new Notice('❌ Syncthing executable not found');
+					}
+				}));
+
+		new Setting(binarySection)
+			.setName('Download Executable')
+			.setDesc('Download the Syncthing executable for your platform')
+			.addButton(button => button
+				.setButtonText('Download')
+				.setTooltip('Download Syncthing binary')
+				.onClick(async () => {
+					try {
+						const success = await this.plugin.downloadSyncthingExecutable();
+						if (success) {
+							new Notice('✅ Syncthing executable downloaded successfully!');
+						} else {
+							new Notice('❌ Failed to download Syncthing executable');
+						}
+					} catch (error) {
+						new Notice(`Download failed: ${error.message}`);
+					}
+				}));
+
+		new Setting(binarySection)
+			.setName('Open Syncthing GUI')
+			.setDesc('Open Syncthing web interface in browser')
+			.addButton(button => button
+				.setButtonText('Open GUI')
+				.setTooltip('Open Syncthing web interface')
+				.onClick(async () => {
+					const url = this.plugin.settings.mobileMode ? 
+						this.plugin.settings.remoteUrl : 
+						'http://127.0.0.1:8384';
+					window.open(url, '_blank');
+				}));
+
+		// Configuration Section
+		const configSection = containerEl.createDiv();
+		configSection.createEl('h2', {text: 'Configuration'});
+
+		new Setting(configSection)
 			.setName('Syncthing API key')
 			.setDesc('API key of Syncthing instance (in Syncthing GUI -> Actions -> Settings)')
 			.addText(text => text
@@ -552,7 +814,7 @@ class SettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
+		new Setting(configSection)
 			.setName('Vault folder ID')
 			.setDesc('ID of the folder in which the vault is stored (in Syncthing GUI -> Folders -> Vault folder)')
 			.addText(text => text
@@ -563,7 +825,7 @@ class SettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
+		new Setting(configSection)
 			.setName('Start on Obsidian open')
 			.setDesc('Start Syncthing when Obsidian opens')
 			.addToggle(toggle => toggle.setValue(this.plugin.settings.startOnObsidianOpen)
@@ -572,7 +834,7 @@ class SettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 		
-		new Setting(containerEl)
+		new Setting(configSection)
 			.setName('Stop on Obsidian close')
 			.setDesc('Stop Syncthing when Obsidian closes')
 			.addToggle(toggle => toggle.setValue(this.plugin.settings.stopOnObsidianClose)
@@ -581,7 +843,7 @@ class SettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
+		new Setting(configSection)
 			.setName('Mobile Mode')
 			.setDesc('Enable mobile mode to connect to remote Syncthing instead of running locally (auto-detected)')
 			.addToggle(toggle => toggle.setValue(this.plugin.settings.mobileMode)
@@ -590,7 +852,7 @@ class SettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
+		new Setting(configSection)
 			.setName('Remote Syncthing URL')
 			.setDesc('URL of remote Syncthing instance (used in mobile mode or when connecting to remote server)')
 			.addText(text => text
@@ -601,7 +863,7 @@ class SettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
+		new Setting(configSection)
 			.setName('Use Docker')
 			.setDesc('Run Syncthing in Docker container instead of running it locally (desktop only)')
 			.addToggle(toggle => toggle.setValue(this.plugin.settings.useDocker)
