@@ -113,7 +113,7 @@ export default class SyncthingLauncher extends Plugin {
 			}
 			else // Local Obsidian sub-process
 			{
-				const executablePath = this.getPluginAbsolutePath() + "syncthing/syncthing.exe";
+				const executablePath = this.getSyncthingExecutablePath();
 				this.syncthingInstance = spawn(executablePath, []);
 
 				this.syncthingInstance.stdout.on('data', (data) => {
@@ -295,6 +295,20 @@ export default class SyncthingLauncher extends Plugin {
         // Absolute path
         return `${basePath}/${relativePath}`;
     }
+
+	getSyncthingExecutablePath(): string {
+		const pluginPath = this.getPluginAbsolutePath();
+		
+		// Detect platform and return appropriate executable path
+		if (process.platform === 'win32') {
+			return `${pluginPath}syncthing/syncthing.exe`;
+		} else if (process.platform === 'darwin') {
+			return `${pluginPath}syncthing/syncthing-macos`;
+		} else {
+			// Linux and other Unix-like systems
+			return `${pluginPath}syncthing/syncthing-linux`;
+		}
+	}
 
 	async getLastSyncDate() {
 		try {
