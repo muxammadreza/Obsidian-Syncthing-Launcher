@@ -1,7 +1,21 @@
 import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
-import { ChildProcessWithoutNullStreams, exec, spawn } from "child_process";
-import { readFileSync, writeFileSync } from 'fs';
 import axios from 'axios';
+
+// Conditional imports for desktop-only functionality
+let spawn: any, exec: any, readFileSync: any, writeFileSync: any;
+
+try {
+	// These will only work on desktop platforms
+	const childProcess = require("child_process");
+	const fs = require('fs');
+	spawn = childProcess.spawn;
+	exec = childProcess.exec;
+	readFileSync = fs.readFileSync;
+	writeFileSync = fs.writeFileSync;
+} catch (error) {
+	// Mobile platform - these modules are not available
+	console.log('Desktop-only modules not available (mobile platform detected)');
+}
 
 interface Settings {
 	syncthingApiKey: string;
@@ -9,6 +23,8 @@ interface Settings {
 	startOnObsidianOpen: boolean;
 	stopOnObsidianClose: boolean;
 	useDocker: boolean;
+	remoteUrl: string;
+	mobileMode: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -17,6 +33,8 @@ const DEFAULT_SETTINGS: Settings = {
 	startOnObsidianOpen: false,
 	stopOnObsidianClose: false,
 	useDocker: false,
+	remoteUrl: 'http://127.0.0.1:8384',
+	mobileMode: false,
 }
 
 const UPDATE_INTERVAL = 5000;
@@ -28,8 +46,9 @@ export default class SyncthingLauncher extends Plugin {
 
 	private vaultPath = "";
 	private vaultName = "";
+	private isMobile = false;
 
-	private syncthingInstance: ChildProcessWithoutNullStreams | null = null;
+	private syncthingInstance: any | null = null;
 	private syncthingLastSyncDate: string = "no data";
 
 	private statusBarConnectionIconItem: HTMLElement | null = this.addStatusBarItem();
@@ -37,6 +56,15 @@ export default class SyncthingLauncher extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+
+		// Detect mobile platform
+		this.isMobile = this.detectMobilePlatform();
+		
+		// Auto-enable mobile mode on mobile platforms
+		if (this.isMobile && !this.settings.mobileMode) {
+			this.settings.mobileMode = true;
+			await this.saveSettings();
+		}
 
 		let adapter = this.app.vault.adapter;
 		if (adapter instanceof FileSystemAdapter) {
@@ -103,6 +131,12 @@ export default class SyncthingLauncher extends Plugin {
 				return;
 			}
 
+			// Mobile mode - cannot start Syncthing locally
+			if (this.isMobile || this.settings.mobileMode) {
+				new Notice('Mobile mode: Please connect to an existing Syncthing instance via Remote URL in settings', 5000);
+				return;
+			}
+
 			if (this.settings.useDocker) // Docker
 			{
 				if (this.checkDockerStatus())
@@ -113,18 +147,23 @@ export default class SyncthingLauncher extends Plugin {
 			}
 			else // Local Obsidian sub-process
 			{
+				if (!spawn) {
+					new Notice('Local Syncthing execution not available on mobile platforms', 5000);
+					return;
+				}
+
 				const executablePath = this.getSyncthingExecutablePath();
 				this.syncthingInstance = spawn(executablePath, []);
 
-				this.syncthingInstance.stdout.on('data', (data) => {
+				this.syncthingInstance.stdout.on('data', (data: any) => {
 					console.log(`stdout: ${data}`);
 				});
 
-				this.syncthingInstance.stderr.on('data', (data) => {
+				this.syncthingInstance.stderr.on('data', (data: any) => {
 					console.error(`stderr: ${data}`);
 				});
 
-				this.syncthingInstance.on('exit', (code) => {
+				this.syncthingInstance.on('exit', (code: any) => {
 					console.log(`child process exited with code ${code}`);
 				});
 			}
@@ -132,16 +171,26 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	stopSyncthing(): void {
+		// Mobile mode or mobile platform - nothing to stop locally
+		if (this.isMobile || this.settings.mobileMode) {
+			console.log('Mobile mode: No local Syncthing to stop');
+			return;
+		}
 
 		if (this.settings.useDocker)
 		{
+			if (!exec) {
+				console.log('Docker operations not available on mobile platforms');
+				return;
+			}
+
 			const dockerRunCommand = [
 				`docker compose`,
 				`-f ${this.getPluginAbsolutePath()}docker/docker-compose.yaml`,
 				`stop`,
 			];
 
-			exec(dockerRunCommand.join(' '), (error, stdout, stderr) => {
+			exec(dockerRunCommand.join(' '), (error: any, stdout: any, stderr: any) => {
 				if (error) {
 					console.error('Error:', error.message);
 					return false;
@@ -156,6 +205,11 @@ export default class SyncthingLauncher extends Plugin {
 		}
 		else
 		{
+			if (!this.syncthingInstance) {
+				console.log('No local Syncthing instance to stop');
+				return;
+			}
+
 			const pid : number | undefined = this.syncthingInstance?.pid;
 			if (pid !== undefined) {
 				var kill = require('tree-kill');
@@ -171,6 +225,11 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	async startSyncthingDockerStack() {
+		if (!exec) {
+			new Notice('Docker operations not available on mobile platforms', 5000);
+			return;
+		}
+
 		// Set environment variable
 		this.updateEnvFile({
 			VAULT_PATH: `${this.vaultPath}`,
@@ -185,7 +244,7 @@ export default class SyncthingLauncher extends Plugin {
 			`-d`
 		];
 
-		exec(dockerRunCommand.join(' '), (error, stdout, stderr) => {
+		exec(dockerRunCommand.join(' '), (error: any, stdout: any, stderr: any) => {
 			if (error) {
 				console.error('Error:', error.message);
 				return false;
@@ -200,6 +259,12 @@ export default class SyncthingLauncher extends Plugin {
 	};
 
 	updateEnvFile(vars: Record<string, string>) {
+		// Skip on mobile platforms where fs is not available
+		if (!writeFileSync || !readFileSync) {
+			console.log('File system operations not available on mobile platform');
+			return;
+		}
+
 		const filePath = `${this.getPluginAbsolutePath()}docker/.env`;
 		let content = readFileSync(filePath, 'utf8');
 	  
@@ -212,6 +277,12 @@ export default class SyncthingLauncher extends Plugin {
 	  }
 
 	getSyncthingURL(): string {
+		// Mobile mode or explicit remote URL setting
+		if (this.isMobile || this.settings.mobileMode) {
+			return this.settings.remoteUrl;
+		}
+		
+		// Desktop mode - Docker or local
 		return this.settings.useDocker ? SYNCTHING_CORS_PROXY_CONTAINER_URL : SYNCTHING_CONTAINER_URL;
 	}
 
@@ -228,7 +299,12 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	checkDockerStatus(): boolean {
-		exec('docker ps', (error, stdout, stderr) => {
+		if (!exec) {
+			console.log('Docker operations not available on mobile platforms');
+			return false;
+		}
+
+		exec('docker ps', (error: any, stdout: any, stderr: any) => {
 			if (error) {
 				console.error('Error:', error.message);
 				return false;
@@ -277,6 +353,21 @@ export default class SyncthingLauncher extends Plugin {
 				this.statusBarLastSyncTextItem.setText(`Last sync: ${this.syncthingLastSyncDate}`);
 			}
 		});
+	}
+
+	detectMobilePlatform(): boolean {
+		// Check for mobile platforms using process.platform and user agent
+		const platform = process.platform;
+		const userAgent = navigator.userAgent.toLowerCase();
+		
+		// Check for iOS, Android, or mobile browsers
+		const isMobileUA = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
+		
+		// Check for touch support as additional indicator
+		const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+		
+		// Consider it mobile if user agent suggests mobile or if it's a touch device with small screen
+		return isMobileUA || (isTouchDevice && window.innerWidth < 1024);
 	}
 
 	getPluginAbsolutePath(): string {
@@ -396,8 +487,28 @@ class SettingTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
+			.setName('Mobile Mode')
+			.setDesc('Enable mobile mode to connect to remote Syncthing instead of running locally (auto-detected)')
+			.addToggle(toggle => toggle.setValue(this.plugin.settings.mobileMode)
+				.onChange(async (value) => {
+					this.plugin.settings.mobileMode = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Remote Syncthing URL')
+			.setDesc('URL of remote Syncthing instance (used in mobile mode or when connecting to remote server)')
+			.addText(text => text
+				.setPlaceholder('http://192.168.1.100:8384')
+				.setValue(this.plugin.settings.remoteUrl)
+				.onChange(async (value) => {
+					this.plugin.settings.remoteUrl = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
 			.setName('Use Docker')
-			.setDesc('Run Syncthing in Docker container instead of running it locally')
+			.setDesc('Run Syncthing in Docker container instead of running it locally (desktop only)')
 			.addToggle(toggle => toggle.setValue(this.plugin.settings.useDocker)
 				.onChange(async (value) => {
 					this.plugin.settings.useDocker = value;

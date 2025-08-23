@@ -137,8 +137,6 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
-var import_child_process = require("child_process");
-var import_fs = require("fs");
 
 // node_modules/axios/lib/helpers/bind.js
 function bind(fn, thisArg) {
@@ -2278,12 +2276,28 @@ var {
 } = axios_default;
 
 // main.ts
+var spawn;
+var exec;
+var readFileSync;
+var writeFileSync;
+try {
+  const childProcess = require("child_process");
+  const fs = require("fs");
+  spawn = childProcess.spawn;
+  exec = childProcess.exec;
+  readFileSync = fs.readFileSync;
+  writeFileSync = fs.writeFileSync;
+} catch (error) {
+  console.log("Desktop-only modules not available (mobile platform detected)");
+}
 var DEFAULT_SETTINGS = {
   syncthingApiKey: "",
   vaultFolderID: "",
   startOnObsidianOpen: false,
   stopOnObsidianClose: false,
-  useDocker: false
+  useDocker: false,
+  remoteUrl: "http://127.0.0.1:8384",
+  mobileMode: false
 };
 var UPDATE_INTERVAL = 5e3;
 var SYNCTHING_CONTAINER_URL = "http://127.0.0.1:8384/";
@@ -2293,6 +2307,7 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     super(...arguments);
     this.vaultPath = "";
     this.vaultName = "";
+    this.isMobile = false;
     this.syncthingInstance = null;
     this.syncthingLastSyncDate = "no data";
     this.statusBarConnectionIconItem = this.addStatusBarItem();
@@ -2301,6 +2316,11 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
   async onload() {
     var _a, _b, _c;
     await this.loadSettings();
+    this.isMobile = this.detectMobilePlatform();
+    if (this.isMobile && !this.settings.mobileMode) {
+      this.settings.mobileMode = true;
+      await this.saveSettings();
+    }
     let adapter = this.app.vault.adapter;
     if (adapter instanceof import_obsidian.FileSystemAdapter) {
       this.vaultPath = adapter.getBasePath();
@@ -2346,14 +2366,22 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         console.log("Syncthing is already running");
         return;
       }
+      if (this.isMobile || this.settings.mobileMode) {
+        new import_obsidian.Notice("Mobile mode: Please connect to an existing Syncthing instance via Remote URL in settings", 5e3);
+        return;
+      }
       if (this.settings.useDocker) {
         if (this.checkDockerStatus()) {
           new import_obsidian.Notice("Starting Docker");
           this.startSyncthingDockerStack();
         }
       } else {
+        if (!spawn) {
+          new import_obsidian.Notice("Local Syncthing execution not available on mobile platforms", 5e3);
+          return;
+        }
         const executablePath = this.getSyncthingExecutablePath();
-        this.syncthingInstance = (0, import_child_process.spawn)(executablePath, []);
+        this.syncthingInstance = spawn(executablePath, []);
         this.syncthingInstance.stdout.on("data", (data) => {
           console.log(`stdout: ${data}`);
         });
@@ -2368,13 +2396,21 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
   }
   stopSyncthing() {
     var _a;
+    if (this.isMobile || this.settings.mobileMode) {
+      console.log("Mobile mode: No local Syncthing to stop");
+      return;
+    }
     if (this.settings.useDocker) {
+      if (!exec) {
+        console.log("Docker operations not available on mobile platforms");
+        return;
+      }
       const dockerRunCommand = [
         `docker compose`,
         `-f ${this.getPluginAbsolutePath()}docker/docker-compose.yaml`,
         `stop`
       ];
-      (0, import_child_process.exec)(dockerRunCommand.join(" "), (error, stdout, stderr) => {
+      exec(dockerRunCommand.join(" "), (error, stdout, stderr) => {
         if (error) {
           console.error("Error:", error.message);
           return false;
@@ -2386,6 +2422,10 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         console.log("Output:", stdout);
       });
     } else {
+      if (!this.syncthingInstance) {
+        console.log("No local Syncthing instance to stop");
+        return;
+      }
       const pid = (_a = this.syncthingInstance) == null ? void 0 : _a.pid;
       if (pid !== void 0) {
         var kill = require_tree_kill();
@@ -2400,6 +2440,10 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     }
   }
   async startSyncthingDockerStack() {
+    if (!exec) {
+      new import_obsidian.Notice("Docker operations not available on mobile platforms", 5e3);
+      return;
+    }
     this.updateEnvFile({
       VAULT_PATH: `${this.vaultPath}`,
       SYNCTHING_CONFIG_PATH: `${this.vaultPath}/.obsidian/syncthing_config`
@@ -2410,7 +2454,7 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
       `up`,
       `-d`
     ];
-    (0, import_child_process.exec)(dockerRunCommand.join(" "), (error, stdout, stderr) => {
+    exec(dockerRunCommand.join(" "), (error, stdout, stderr) => {
       if (error) {
         console.error("Error:", error.message);
         return false;
@@ -2423,15 +2467,22 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     });
   }
   updateEnvFile(vars) {
+    if (!writeFileSync || !readFileSync) {
+      console.log("File system operations not available on mobile platform");
+      return;
+    }
     const filePath = `${this.getPluginAbsolutePath()}docker/.env`;
-    let content = (0, import_fs.readFileSync)(filePath, "utf8");
+    let content = readFileSync(filePath, "utf8");
     Object.entries(vars).forEach(([key, value]) => {
       const regex = new RegExp(`^${key}=.*`, "m");
       content = content.replace(regex, `${key}=${value}`);
     });
-    (0, import_fs.writeFileSync)(filePath, content, "utf8");
+    writeFileSync(filePath, content, "utf8");
   }
   getSyncthingURL() {
+    if (this.isMobile || this.settings.mobileMode) {
+      return this.settings.remoteUrl;
+    }
     return this.settings.useDocker ? SYNCTHING_CORS_PROXY_CONTAINER_URL : SYNCTHING_CONTAINER_URL;
   }
   async isSyncthingRunning() {
@@ -2448,7 +2499,11 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     });
   }
   checkDockerStatus() {
-    (0, import_child_process.exec)("docker ps", (error, stdout, stderr) => {
+    if (!exec) {
+      console.log("Docker operations not available on mobile platforms");
+      return false;
+    }
+    exec("docker ps", (error, stdout, stderr) => {
       if (error) {
         console.error("Error:", error.message);
         return false;
@@ -2485,6 +2540,13 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         this.statusBarLastSyncTextItem.setText(`Last sync: ${this.syncthingLastSyncDate}`);
       }
     });
+  }
+  detectMobilePlatform() {
+    const platform = process.platform;
+    const userAgent = navigator.userAgent.toLowerCase();
+    const isMobileUA = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
+    const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+    return isMobileUA || isTouchDevice && window.innerWidth < 1024;
   }
   getPluginAbsolutePath() {
     let basePath;
@@ -2557,7 +2619,15 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
       this.plugin.settings.stopOnObsidianClose = value;
       await this.plugin.saveSettings();
     }));
-    new import_obsidian.Setting(containerEl).setName("Use Docker").setDesc("Run Syncthing in Docker container instead of running it locally").addToggle((toggle) => toggle.setValue(this.plugin.settings.useDocker).onChange(async (value) => {
+    new import_obsidian.Setting(containerEl).setName("Mobile Mode").setDesc("Enable mobile mode to connect to remote Syncthing instead of running locally (auto-detected)").addToggle((toggle) => toggle.setValue(this.plugin.settings.mobileMode).onChange(async (value) => {
+      this.plugin.settings.mobileMode = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Remote Syncthing URL").setDesc("URL of remote Syncthing instance (used in mobile mode or when connecting to remote server)").addText((text) => text.setPlaceholder("http://192.168.1.100:8384").setValue(this.plugin.settings.remoteUrl).onChange(async (value) => {
+      this.plugin.settings.remoteUrl = value;
+      await this.plugin.saveSettings();
+    }));
+    new import_obsidian.Setting(containerEl).setName("Use Docker").setDesc("Run Syncthing in Docker container instead of running it locally (desktop only)").addToggle((toggle) => toggle.setValue(this.plugin.settings.useDocker).onChange(async (value) => {
       this.plugin.settings.useDocker = value;
       await this.plugin.saveSettings();
     }));

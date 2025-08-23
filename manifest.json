@@ -1,10 +1,9 @@
 {
 	"id": "obsidian-syncthing-launcher",
 	"name": "Syncthing Launcher",
-	"version": "1.0.4",
+	"version": "1.0.5",
 	"minAppVersion": "0.15.0",
-	"description": "Runs Syncthing as subprocess or Docker container and displays connection status in the status bar",
+	"description": "Cross-platform Syncthing integration: runs locally on desktop or connects to remote instances on mobile",
 	"author": "MattSzymonski",
-	"authorUrl": "https://mattszymonski.com/",
-	"isDesktopOnly": true
+	"authorUrl": "https://mattszymonski.com/"
 }
