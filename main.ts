@@ -1,4 +1,4 @@
-import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting, requestUrl } from 'obsidian';
 import axios from 'axios';
 
 // Conditional imports for desktop-only functionality
@@ -408,14 +408,13 @@ export default class SyncthingLauncher extends Plugin {
 			// Download URL from our GitHub release
 			const downloadUrl = `https://github.com/muxammadreza/Obsidian-Syncthing-Launcher/releases/download/v${this.manifest.version}/${fileName}`;
 			
-			// Download the file
-			const response = await fetch(downloadUrl);
-			if (!response.ok) {
-				throw new Error(`Download failed: ${response.statusText}`);
-			}
+			// Download the file using Obsidian's requestUrl (bypasses CORS)
+			const response = await requestUrl({
+				url: downloadUrl,
+				method: 'GET'
+			});
 
-			const arrayBuffer = await response.arrayBuffer();
-			const data = new Uint8Array(arrayBuffer);
+			const data = new Uint8Array(response.arrayBuffer);
 
 			// Create syncthing directory if it doesn't exist
 			const syncthingDir = `${this.getPluginAbsolutePath()}syncthing`;

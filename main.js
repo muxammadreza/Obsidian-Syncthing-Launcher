@@ -2582,12 +2582,11 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         fileName = "syncthing-linux";
       }
       const downloadUrl = `https://github.com/muxammadreza/Obsidian-Syncthing-Launcher/releases/download/v${this.manifest.version}/${fileName}`;
-      const response = await fetch(downloadUrl);
-      if (!response.ok) {
-        throw new Error(`Download failed: ${response.statusText}`);
-      }
-      const arrayBuffer = await response.arrayBuffer();
-      const data = new Uint8Array(arrayBuffer);
+      const response = await (0, import_obsidian.requestUrl)({
+        url: downloadUrl,
+        method: "GET"
+      });
+      const data = new Uint8Array(response.arrayBuffer);
       const syncthingDir = `${this.getPluginAbsolutePath()}syncthing`;
       if (typeof require !== "undefined") {
         const fs = require("fs");
