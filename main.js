@@ -1999,6 +1999,106 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
     });
   }
   renderAdvancedTab(container) {
+    if (this.plugin.detectMobilePlatform() || this.plugin.settings.mobileMode) {
+      this.renderMobileAdvancedTab(container);
+      return;
+    }
+    this.renderDesktopAdvancedTab(container);
+  }
+  renderMobileAdvancedTab(container) {
+    const mobileSection = container.createDiv("syncthing-section");
+    mobileSection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F4F1} Mobile Options" });
+    mobileSection.createDiv({
+      cls: "syncthing-section-description",
+      text: "Advanced options for mobile Syncthing management."
+    });
+    const diagnosticSection = container.createDiv("syncthing-section");
+    diagnosticSection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F50D} Connection Diagnostics" });
+    const diagnosticControls = diagnosticSection.createDiv("syncthing-controls");
+    const testConnBtn = diagnosticControls.createEl("button", {
+      cls: "syncthing-btn primary",
+      text: "\u{1F517} Test Connection"
+    });
+    testConnBtn.addEventListener("click", async () => {
+      try {
+        testConnBtn.disabled = true;
+        testConnBtn.textContent = "\u23F3 Testing...";
+        const url = this.plugin.getSyncthingURL();
+        const response = await fetch(`${url}/rest/system/status`, {
+          headers: {
+            "X-API-Key": this.plugin.settings.syncthingApiKey
+          }
+        });
+        if (response.ok) {
+          new import_obsidian.Notice("\u2705 Connection successful");
+        } else {
+          new import_obsidian.Notice(`\u274C Connection failed to ${url} (${response.status})`);
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Connection test failed: ${error.message}`);
+      } finally {
+        testConnBtn.disabled = false;
+        testConnBtn.textContent = "\u{1F517} Test Connection";
+      }
+    });
+    const refreshStatusBtn = diagnosticControls.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u{1F504} Refresh Status"
+    });
+    refreshStatusBtn.addEventListener("click", () => {
+      this.plugin.updateStatusBar();
+      new import_obsidian.Notice("Status refreshed");
+    });
+    const remoteSection = container.createDiv("syncthing-section");
+    remoteSection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F39B}\uFE0F Remote Control" });
+    const remoteControls = remoteSection.createDiv("syncthing-controls");
+    const pauseBtn = remoteControls.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u23F8\uFE0F Pause Sync"
+    });
+    pauseBtn.addEventListener("click", async () => {
+      try {
+        const success = await this.plugin.pauseSyncthing();
+        if (success) {
+          new import_obsidian.Notice("Syncthing paused successfully");
+        } else {
+          new import_obsidian.Notice("Failed to pause Syncthing");
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Failed to pause Syncthing: ${error.message}`);
+      }
+    });
+    const resumeBtn = remoteControls.createEl("button", {
+      cls: "syncthing-btn success",
+      text: "\u25B6\uFE0F Resume Sync"
+    });
+    resumeBtn.addEventListener("click", async () => {
+      try {
+        const success = await this.plugin.resumeSyncthing();
+        if (success) {
+          new import_obsidian.Notice("Syncthing resumed successfully");
+        } else {
+          new import_obsidian.Notice("Failed to resume Syncthing");
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Failed to resume Syncthing: ${error.message}`);
+      }
+    });
+    const infoSection = container.createDiv("syncthing-section");
+    infoSection.createEl("h3", { cls: "syncthing-section-title", text: "\u2139\uFE0F Platform Information" });
+    const infoCard = infoSection.createDiv("syncthing-diagnostic");
+    infoCard.createDiv({ cls: "syncthing-diagnostic-title", text: "Mobile Platform Details" });
+    const platformItem = infoCard.createDiv("syncthing-diagnostic-item");
+    platformItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Platform:" });
+    platformItem.createSpan({ cls: "syncthing-diagnostic-value", text: `${platformInfo.platform} ${platformInfo.arch}` });
+    const modeItem = infoCard.createDiv("syncthing-diagnostic-item");
+    modeItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Mode:" });
+    modeItem.createSpan({ cls: "syncthing-diagnostic-value", text: "Remote/Mobile" });
+    const urlItem = infoCard.createDiv("syncthing-diagnostic-item");
+    urlItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Target URL:" });
+    urlItem.createSpan({ cls: "syncthing-diagnostic-value", text: this.plugin.getSyncthingURL() });
+  }
+  renderDesktopAdvancedTab(container) {
     const binarySection = container.createDiv("syncthing-section");
     binarySection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F4E6} Binary Management" });
     binarySection.createDiv({
@@ -2031,7 +2131,7 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
         const success = await this.plugin.downloadSyncthingExecutable();
         if (success) {
           new import_obsidian.Notice("\u2705 Syncthing downloaded successfully");
-          this.renderAdvancedTab(container);
+          this.renderDesktopAdvancedTab(container);
         } else {
           new import_obsidian.Notice("\u274C Download failed");
         }
@@ -2051,13 +2151,11 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
       redownloadBtn.textContent = "\u23F3 Re-downloading...";
       try {
         const executablePath = this.plugin.getSyncthingExecutablePath();
-        if (typeof require !== "undefined") {
-          const fs2 = require("fs");
-          const path2 = require("path");
+        if (fs && path) {
           try {
-            const syncthingDir = path2.dirname(executablePath);
-            if (fs2.existsSync(syncthingDir)) {
-              fs2.rmSync(syncthingDir, { recursive: true, force: true });
+            const syncthingDir = path.dirname(executablePath);
+            if (fs.existsSync(syncthingDir)) {
+              fs.rmSync(syncthingDir, { recursive: true, force: true });
             }
           } catch (removeError) {
             console.log("Could not remove existing executable:", removeError);
@@ -2066,7 +2164,7 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
         const success = await this.plugin.downloadSyncthingExecutable();
         if (success) {
           new import_obsidian.Notice("\u2705 Syncthing re-downloaded successfully");
-          this.renderAdvancedTab(container);
+          this.renderDesktopAdvancedTab(container);
         } else {
           new import_obsidian.Notice("\u274C Re-download failed");
         }

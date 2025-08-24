@@ -2353,6 +2353,132 @@ class SettingTab extends PluginSettingTab {
 	}
 
 	private renderAdvancedTab(container: HTMLElement): void {
+		// Check if we're on mobile and show appropriate content
+		if (this.plugin.detectMobilePlatform() || this.plugin.settings.mobileMode) {
+			this.renderMobileAdvancedTab(container);
+			return;
+		}
+		
+		// Desktop Advanced Tab
+		this.renderDesktopAdvancedTab(container);
+	}
+
+	private renderMobileAdvancedTab(container: HTMLElement): void {
+		// Mobile-specific advanced options
+		const mobileSection = container.createDiv('syncthing-section');
+		mobileSection.createEl('h3', { cls: 'syncthing-section-title', text: '📱 Mobile Options' });
+		mobileSection.createDiv({
+			cls: 'syncthing-section-description',
+			text: 'Advanced options for mobile Syncthing management.'
+		});
+
+		// Connection diagnostics
+		const diagnosticSection = container.createDiv('syncthing-section');
+		diagnosticSection.createEl('h3', { cls: 'syncthing-section-title', text: '🔍 Connection Diagnostics' });
+		
+		const diagnosticControls = diagnosticSection.createDiv('syncthing-controls');
+		
+		const testConnBtn = diagnosticControls.createEl('button', {
+			cls: 'syncthing-btn primary',
+			text: '🔗 Test Connection'
+		});
+		testConnBtn.addEventListener('click', async () => {
+			try {
+				testConnBtn.disabled = true;
+				testConnBtn.textContent = '⏳ Testing...';
+				
+				const url = this.plugin.getSyncthingURL();
+				// Simple connection test - just try to get system status
+				const response = await fetch(`${url}/rest/system/status`, {
+					headers: {
+						'X-API-Key': this.plugin.settings.syncthingApiKey
+					}
+				});
+				
+				if (response.ok) {
+					new Notice('✅ Connection successful');
+				} else {
+					new Notice(`❌ Connection failed to ${url} (${response.status})`);
+				}
+			} catch (error) {
+				new Notice(`Connection test failed: ${error.message}`);
+			} finally {
+				testConnBtn.disabled = false;
+				testConnBtn.textContent = '🔗 Test Connection';
+			}
+		});
+
+		const refreshStatusBtn = diagnosticControls.createEl('button', {
+			cls: 'syncthing-btn secondary',
+			text: '🔄 Refresh Status'
+		});
+		refreshStatusBtn.addEventListener('click', () => {
+			// Simple status refresh
+			this.plugin.updateStatusBar();
+			new Notice('Status refreshed');
+		});
+
+		// Remote control section (mobile-appropriate)
+		const remoteSection = container.createDiv('syncthing-section');
+		remoteSection.createEl('h3', { cls: 'syncthing-section-title', text: '🎛️ Remote Control' });
+		
+		const remoteControls = remoteSection.createDiv('syncthing-controls');
+		
+		const pauseBtn = remoteControls.createEl('button', {
+			cls: 'syncthing-btn secondary',
+			text: '⏸️ Pause Sync'
+		});
+		pauseBtn.addEventListener('click', async () => {
+			try {
+				const success = await this.plugin.pauseSyncthing();
+				if (success) {
+					new Notice('Syncthing paused successfully');
+				} else {
+					new Notice('Failed to pause Syncthing');
+				}
+			} catch (error) {
+				new Notice(`Failed to pause Syncthing: ${error.message}`);
+			}
+		});
+
+		const resumeBtn = remoteControls.createEl('button', {
+			cls: 'syncthing-btn success',
+			text: '▶️ Resume Sync'
+		});
+		resumeBtn.addEventListener('click', async () => {
+			try {
+				const success = await this.plugin.resumeSyncthing();
+				if (success) {
+					new Notice('Syncthing resumed successfully');
+				} else {
+					new Notice('Failed to resume Syncthing');
+				}
+			} catch (error) {
+				new Notice(`Failed to resume Syncthing: ${error.message}`);
+			}
+		});
+
+		// Mobile info section
+		const infoSection = container.createDiv('syncthing-section');
+		infoSection.createEl('h3', { cls: 'syncthing-section-title', text: 'ℹ️ Platform Information' });
+		
+		const infoCard = infoSection.createDiv('syncthing-diagnostic');
+		infoCard.createDiv({ cls: 'syncthing-diagnostic-title', text: 'Mobile Platform Details' });
+		
+		const platformItem = infoCard.createDiv('syncthing-diagnostic-item');
+		platformItem.createSpan({ cls: 'syncthing-diagnostic-label', text: 'Platform:' });
+		platformItem.createSpan({ cls: 'syncthing-diagnostic-value', text: `${platformInfo.platform} ${platformInfo.arch}` });
+
+		const modeItem = infoCard.createDiv('syncthing-diagnostic-item');
+		modeItem.createSpan({ cls: 'syncthing-diagnostic-label', text: 'Mode:' });
+		modeItem.createSpan({ cls: 'syncthing-diagnostic-value', text: 'Remote/Mobile' });
+
+		const urlItem = infoCard.createDiv('syncthing-diagnostic-item');
+		urlItem.createSpan({ cls: 'syncthing-diagnostic-label', text: 'Target URL:' });
+		urlItem.createSpan({ cls: 'syncthing-diagnostic-value', text: this.plugin.getSyncthingURL() });
+	}
+
+	private renderDesktopAdvancedTab(container: HTMLElement): void {
 		// Binary Management Section
 		const binarySection = container.createDiv('syncthing-section');
 		binarySection.createEl('h3', { cls: 'syncthing-section-title', text: '📦 Binary Management' });
@@ -2393,7 +2519,7 @@ class SettingTab extends PluginSettingTab {
 				const success = await this.plugin.downloadSyncthingExecutable();
 				if (success) {
 					new Notice('✅ Syncthing downloaded successfully');
-					this.renderAdvancedTab(container);
+					this.renderDesktopAdvancedTab(container);
 				} else {
 					new Notice('❌ Download failed');
 				}
@@ -2415,10 +2541,7 @@ class SettingTab extends PluginSettingTab {
 			try {
 				// Remove existing executable
 				const executablePath = this.plugin.getSyncthingExecutablePath();
-				if (typeof require !== 'undefined') {
-					const fs = require('fs');
-					const path = require('path');
-					
+				if (fs && path) {
 					try {
 						const syncthingDir = path.dirname(executablePath);
 						if (fs.existsSync(syncthingDir)) {
@@ -2432,7 +2555,7 @@ class SettingTab extends PluginSettingTab {
 				const success = await this.plugin.downloadSyncthingExecutable();
 				if (success) {
 					new Notice('✅ Syncthing re-downloaded successfully');
-					this.renderAdvancedTab(container);
+					this.renderDesktopAdvancedTab(container);
 				} else {
 					new Notice('❌ Re-download failed');
 				}
