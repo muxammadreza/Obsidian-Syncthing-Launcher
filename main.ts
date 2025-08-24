@@ -479,119 +479,118 @@ export default class SyncthingLauncher extends Plugin {
 		}
 	}
 
+	/**
+	 * Modern status detection using Obsidian's requestUrl API to bypass CORS restrictions.
+	 * This method properly handles Syncthing's status detection without false positives.
+	 * 
+	 * @returns Promise<boolean> true if Syncthing is running and accessible, false otherwise
+	 */
 	async isSyncthingRunning(): Promise<boolean> {
 		try {
-			const url = this.getSyncthingURL();
+			const baseUrl = this.getSyncthingURL();
+			console.log('Using configured remoteUrl:', baseUrl);
 			
-			// For mobile/remote mode, always try with API key
+			// For mobile/remote mode, always use API key and use requestUrl for CORS bypass
 			if (this.isMobile || this.settings.mobileMode) {
-				const config = {
+				if (!this.settings.syncthingApiKey) {
+					console.log('Mobile mode requires API key');
+					return false;
+				}
+				
+				const response = await requestUrl({
+					url: baseUrl,
+					method: 'GET',
 					headers: {
 						'X-API-Key': this.settings.syncthingApiKey,
 					}
-				};
-				const response = await axios.get(url, config);
+				});
+				
 				return response.status === 200;
 			}
 			
-			// For local instances, first try without API key (for initial setup)
+			// For desktop/local instances, use modern detection approach
+			// Try with requestUrl first to avoid CORS issues entirely
 			try {
-				const response = await axios.get(url);
+				const response = await requestUrl({
+					url: baseUrl,
+					method: 'GET'
+				});
+				
+				// If we get here, Syncthing is definitely running
 				return response.status === 200;
+				
 			} catch (noAuthError: any) {
-				// Check if this is an axios error
-				if (noAuthError.isAxiosError || noAuthError.name === 'AxiosError') {
-					
-					// ERR_CONNECTION_REFUSED means Syncthing is definitely NOT running
-					if (noAuthError.code === 'ERR_CONNECTION_REFUSED') {
-						return false;
-					}
-					
-					// The key insight: ERR_FAILED 200 (OK) gets converted to ERR_NETWORK by Axios
-					// But we need to be very specific - only certain ERR_NETWORK cases are success
-					// When Syncthing is running but CORS blocks the response:
-					// - error.code: 'ERR_NETWORK' 
-					// - error.message: 'Network Error'
-					// - error.response: undefined
-					// - BUT the browser console shows: net::ERR_FAILED 200 (OK)
-					
-					// Check for response status success first
-					if (noAuthError.response && noAuthError.response.status === 200) {
-						return true;
-					}
-					
-					// For ERR_NETWORK, we need additional validation that this is actually a successful response
-					// Only treat ERR_NETWORK as success if we have other indicators
-					if (noAuthError.code === 'ERR_NETWORK' && 
-						noAuthError.message === 'Network Error' && 
-						!noAuthError.response) {
-						// This could be either a real network error OR a CORS-wrapped success
-						// For now, return false to be conservative - we need better detection
-						return false;
-					}
-				}
+				// requestUrl failed - check the error type
+				console.log('requestUrl failed with:', noAuthError);
 				
-				// If no-auth fails, try with API key (configured instance)
-				if (this.settings.syncthingApiKey) {
-					try {
-						const config = {
-							headers: {
-								'X-API-Key': this.settings.syncthingApiKey,
-							}
-						};
-						const response = await axios.get(url, config);
-						return response.status === 200;
-					} catch (authError: any) {
-						// Same careful error detection for API key requests
-						if (authError.isAxiosError || authError.name === 'AxiosError') {
-							
-							// ERR_CONNECTION_REFUSED means definitely NOT running
-							if (authError.code === 'ERR_CONNECTION_REFUSED') {
-								throw authError;
-							}
-							
-							// Check for response status success
-							if (authError.response && authError.response.status === 200) {
-								return true;
-							}
-							
-							// For ERR_NETWORK, be conservative for now
-							if (authError.code === 'ERR_NETWORK' && 
-								authError.message === 'Network Error' && 
-								!authError.response) {
-								// Conservative: return false, need better detection
-								throw authError;
-							}
+				// For requestUrl errors, check the underlying error
+				if (noAuthError.status === 401 || noAuthError.status === 403) {
+					// Authentication required but server is running
+					// Try again with API key if available
+					if (this.settings.syncthingApiKey) {
+						try {
+							const response = await requestUrl({
+								url: baseUrl,
+								method: 'GET',
+								headers: {
+									'X-API-Key': this.settings.syncthingApiKey,
+								}
+							});
+							return response.status === 200;
+						} catch (authError: any) {
+							console.log('API key request failed:', authError);
+							// If API key request fails, server is still running if it's auth-related
+							return authError.status === 401 || authError.status === 403;
 						}
-						
-						throw authError;
 					}
-				}
-				throw noAuthError;
-			}
-		} catch (error: any) {
-			// Final fallback error checking - be conservative
-			if (error.isAxiosError || error.name === 'AxiosError') {
-				
-				// ERR_CONNECTION_REFUSED means definitely NOT running
-				if (error.code === 'ERR_CONNECTION_REFUSED') {
-					return false;
-				}
-				
-				// Check for response status success
-				if (error.response && error.response.status === 200) {
+					// Server is running but needs authentication
 					return true;
 				}
 				
-				// For ERR_NETWORK, be conservative for now
-				if (error.code === 'ERR_NETWORK' && 
-					error.message === 'Network Error' && 
-					!error.response) {
-					// Conservative: return false, need better detection
+				// Connection refused or network error means server is not running
+				if (noAuthError.status === 0 || 
+					noAuthError.message?.includes('ERR_CONNECTION_REFUSED') ||
+					noAuthError.message?.includes('ECONNREFUSED') ||
+					noAuthError.message?.includes('Failed to fetch')) {
+					return false;
+				}
+				
+				// Other HTTP status codes mean server is running
+				if (noAuthError.status >= 200 && noAuthError.status < 600) {
+					return true;
+				}
+				
+				// Fallback to axios as secondary method for edge cases
+				try {
+					const response = await axios.get(baseUrl, { timeout: 2000 });
+					return response.status === 200;
+				} catch (axiosError: any) {
+					// Axios ERR_CONNECTION_REFUSED means definitely not running
+					if (axiosError.code === 'ERR_CONNECTION_REFUSED') {
+						return false;
+					}
+					
+					// ERR_FAILED with 200 OK in browser console means CORS-wrapped success
+					// This happens when server is running but CORS blocks the response
+					if (axiosError.code === 'ERR_NETWORK' && 
+						axiosError.message === 'Network Error' && 
+						!axiosError.response) {
+						// In modern browsers, this typically means server responded but CORS blocked it
+						// However, we can't be 100% certain, so we'll be conservative
+						return false;
+					}
+					
+					// If we have a response object, the server is running
+					if (axiosError.response) {
+						return true;
+					}
+					
+					// Unknown error - assume not running
 					return false;
 				}
 			}
-			
+		} catch (error: any) {
+			console.log('Unexpected error in isSyncthingRunning:', error);
 			return false;
 		}
 	}
@@ -783,27 +782,35 @@ export default class SyncthingLauncher extends Plugin {
 		}
 	}
 
+	/**
+	 * Get the last sync date using modern requestUrl API to bypass CORS.
+	 * 
+	 * @returns Promise<Date | null> The last sync date or null if unavailable
+	 */
 	async getLastSyncDate() {
 		try {
-		  const baseUrl = this.getSyncthingURL();
-		  // Ensure proper URL construction with trailing slash
-		  const url = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
-		  const response = await axios.get(url + `rest/db/status?folder=${this.settings.vaultFolderID}`, {
-			headers: {
-			  'X-API-Key': this.settings.syncthingApiKey,
-			}
-		  });
+			const baseUrl = this.getSyncthingURL();
+			// Ensure proper URL construction with trailing slash
+			const url = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+			
+			const response = await requestUrl({
+				url: url + `rest/db/status?folder=${this.settings.vaultFolderID}`,
+				method: 'GET',
+				headers: {
+					'X-API-Key': this.settings.syncthingApiKey,
+				}
+			});
 
-		  if (response.data && response.data.stateChanged) {
-			return new Date(response.data.stateChanged);
-		  } else {
-			console.log(response);
-			console.log('No sync data found');
-			return null;
-		  }
+			if (response.json && response.json.stateChanged) {
+				return new Date(response.json.stateChanged);
+			} else {
+				console.log(response);
+				console.log('No sync data found');
+				return null;
+			}
 		} catch (error) {
-		  console.error('Failed to get last sync date:', error);
-		  return null;
+			console.error('Failed to get last sync date:', error);
+			return null;
 		}
 	}
 

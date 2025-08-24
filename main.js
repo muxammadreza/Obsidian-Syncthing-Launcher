@@ -2632,71 +2632,81 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
       return "http://127.0.0.1:8384";
     }
   }
+  /**
+   * Modern status detection using Obsidian's requestUrl API to bypass CORS restrictions.
+   * This method properly handles Syncthing's status detection without false positives.
+   * 
+   * @returns Promise<boolean> true if Syncthing is running and accessible, false otherwise
+   */
   async isSyncthingRunning() {
+    var _a, _b, _c;
     try {
-      const url = this.getSyncthingURL();
+      const baseUrl = this.getSyncthingURL();
+      console.log("Using configured remoteUrl:", baseUrl);
       if (this.isMobile || this.settings.mobileMode) {
-        const config = {
+        if (!this.settings.syncthingApiKey) {
+          console.log("Mobile mode requires API key");
+          return false;
+        }
+        const response = await (0, import_obsidian.requestUrl)({
+          url: baseUrl,
+          method: "GET",
           headers: {
             "X-API-Key": this.settings.syncthingApiKey
           }
-        };
-        const response = await axios_default.get(url, config);
+        });
         return response.status === 200;
       }
       try {
-        const response = await axios_default.get(url);
+        const response = await (0, import_obsidian.requestUrl)({
+          url: baseUrl,
+          method: "GET"
+        });
         return response.status === 200;
       } catch (noAuthError) {
-        if (noAuthError.isAxiosError || noAuthError.name === "AxiosError") {
-          if (noAuthError.code === "ERR_CONNECTION_REFUSED") {
-            return false;
-          }
-          if (noAuthError.response && noAuthError.response.status === 200) {
-            return true;
-          }
-          if (noAuthError.code === "ERR_NETWORK" && noAuthError.message === "Network Error" && !noAuthError.response) {
-            return false;
-          }
-        }
-        if (this.settings.syncthingApiKey) {
-          try {
-            const config = {
-              headers: {
-                "X-API-Key": this.settings.syncthingApiKey
-              }
-            };
-            const response = await axios_default.get(url, config);
-            return response.status === 200;
-          } catch (authError) {
-            if (authError.isAxiosError || authError.name === "AxiosError") {
-              if (authError.code === "ERR_CONNECTION_REFUSED") {
-                throw authError;
-              }
-              if (authError.response && authError.response.status === 200) {
-                return true;
-              }
-              if (authError.code === "ERR_NETWORK" && authError.message === "Network Error" && !authError.response) {
-                throw authError;
-              }
+        console.log("requestUrl failed with:", noAuthError);
+        if (noAuthError.status === 401 || noAuthError.status === 403) {
+          if (this.settings.syncthingApiKey) {
+            try {
+              const response = await (0, import_obsidian.requestUrl)({
+                url: baseUrl,
+                method: "GET",
+                headers: {
+                  "X-API-Key": this.settings.syncthingApiKey
+                }
+              });
+              return response.status === 200;
+            } catch (authError) {
+              console.log("API key request failed:", authError);
+              return authError.status === 401 || authError.status === 403;
             }
-            throw authError;
           }
-        }
-        throw noAuthError;
-      }
-    } catch (error) {
-      if (error.isAxiosError || error.name === "AxiosError") {
-        if (error.code === "ERR_CONNECTION_REFUSED") {
-          return false;
-        }
-        if (error.response && error.response.status === 200) {
           return true;
         }
-        if (error.code === "ERR_NETWORK" && error.message === "Network Error" && !error.response) {
+        if (noAuthError.status === 0 || ((_a = noAuthError.message) == null ? void 0 : _a.includes("ERR_CONNECTION_REFUSED")) || ((_b = noAuthError.message) == null ? void 0 : _b.includes("ECONNREFUSED")) || ((_c = noAuthError.message) == null ? void 0 : _c.includes("Failed to fetch"))) {
+          return false;
+        }
+        if (noAuthError.status >= 200 && noAuthError.status < 600) {
+          return true;
+        }
+        try {
+          const response = await axios_default.get(baseUrl, { timeout: 2e3 });
+          return response.status === 200;
+        } catch (axiosError) {
+          if (axiosError.code === "ERR_CONNECTION_REFUSED") {
+            return false;
+          }
+          if (axiosError.code === "ERR_NETWORK" && axiosError.message === "Network Error" && !axiosError.response) {
+            return false;
+          }
+          if (axiosError.response) {
+            return true;
+          }
           return false;
         }
       }
+    } catch (error) {
+      console.log("Unexpected error in isSyncthingRunning:", error);
       return false;
     }
   }
@@ -2830,17 +2840,24 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
       return `${pluginPath}syncthing/syncthing-linux`;
     }
   }
+  /**
+   * Get the last sync date using modern requestUrl API to bypass CORS.
+   * 
+   * @returns Promise<Date | null> The last sync date or null if unavailable
+   */
   async getLastSyncDate() {
     try {
       const baseUrl = this.getSyncthingURL();
       const url = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
-      const response = await axios_default.get(url + `rest/db/status?folder=${this.settings.vaultFolderID}`, {
+      const response = await (0, import_obsidian.requestUrl)({
+        url: url + `rest/db/status?folder=${this.settings.vaultFolderID}`,
+        method: "GET",
         headers: {
           "X-API-Key": this.settings.syncthingApiKey
         }
       });
-      if (response.data && response.data.stateChanged) {
-        return new Date(response.data.stateChanged);
+      if (response.json && response.json.stateChanged) {
+        return new Date(response.json.stateChanged);
       } else {
         console.log(response);
         console.log("No sync data found");

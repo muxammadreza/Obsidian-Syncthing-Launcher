@@ -1,12 +1,16 @@
 {
 	"name": "obsidian-syncthing-launcher",
-	"version": "1.2.2",
+	"version": "1.2.4",
 	"description": "Cross-platform Syncthing integration: runs locally on desktop or connects to remote instances on mobile",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-		"version": "node version-bump.mjs && git add manifest.json versions.json"
+		"version": "node version-bump.mjs && git add manifest.json versions.json",
+		"release": "./scripts/release.sh",
+		"release:patch": "./scripts/release.sh patch",
+		"release:minor": "./scripts/release.sh minor",
+		"release:major": "./scripts/release.sh major"
 	},
 	"keywords": [],
 	"author": "",
