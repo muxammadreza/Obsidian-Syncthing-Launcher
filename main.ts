@@ -1,5 +1,6 @@
-import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting, requestUrl } from 'obsidian';
-import axios from 'axios';
+import * as http from 'http';
+import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { EventEmitter } from 'events';
 
 // Conditional imports for desktop-only functionality
 let spawn: any, exec: any, readFileSync: any, writeFileSync: any;
@@ -37,6 +38,359 @@ const DEFAULT_SETTINGS: Settings = {
 	mobileMode: false,
 }
 
+interface SyncthingEvent {
+	id: number;
+	type: string;
+	time: string;
+	data: any;
+}
+
+interface Connection {
+	connected: boolean;
+}
+
+interface ConnectionsResponse {
+	connections: { [key: string]: Connection };
+}
+
+/**
+ * SyncthingMonitor class using Node.js HTTP module for reliable localhost communication.
+ * Based on the proven approach from Diego-Viero/Syncthing-status-icon-Obsidian-plugin.
+ */
+class SyncthingMonitor extends EventEmitter {
+	private token: string | null = null;
+	private timeout: number = 1;
+	private lastEventId: number | undefined;
+	private pollingTimeoutId: NodeJS.Timeout | undefined;
+	private isTokenSet: boolean = false;
+	private baseUrl: string = 'http://127.0.0.1:8384';
+	
+	public status: string = "idle";
+	public connectedDevicesCount: number = 0;
+	public availableDevices: number = 0;
+	public fileCompletion: number | undefined;
+	public globalItems: number | undefined;
+	public needItems: number | undefined;
+
+	public setStatusIcon: (icon: string) => void = () => {};
+
+	public startMonitoring(
+		settings: Settings, 
+		setStatusIcon: (icon: string) => void,
+		baseUrl: string
+	) {
+		this.token = settings.syncthingApiKey;
+		this.timeout = 1; // Use 1 second polling for responsiveness
+		this.setStatusIcon = setStatusIcon;
+		this.isTokenSet = !!settings.syncthingApiKey;
+		this.baseUrl = baseUrl;
+
+		if (this.isTokenSet) {
+			this.poll();
+			this.checkConnections();
+		} else {
+			this.status = "API key not set";
+			this.setStatusIcon('❌');
+			this.emit('status-update', {
+				status: this.status,
+				fileCompletion: NaN,
+				globalItems: NaN,
+				needItems: NaN,
+				connectedDevicesCount: NaN,
+				availableDevices: NaN
+			});
+		}
+	}
+
+	public stopMonitoring() {
+		if (this.pollingTimeoutId) {
+			clearTimeout(this.pollingTimeoutId);
+			this.pollingTimeoutId = undefined;
+		}
+		this.lastEventId = undefined;
+		this.status = "stopped";
+		this.emit('disconnected');
+	}
+
+	private poll() {
+		const lastId = this.lastEventId ?? 0;
+
+		if (!this.token) {
+			console.error('Syncthing API token is not set. Cannot poll for events.');
+			this.status = "API key not set";
+			this.emit('status-update', {
+				status: this.status,
+				fileCompletion: NaN,
+				globalItems: NaN,
+				needItems: NaN,
+				connectedDevicesCount: NaN,
+				availableDevices: NaN
+			});
+			return;
+		}
+
+		// Parse URL for hostname and port
+		const url = new URL(this.baseUrl);
+		
+		// Use IPv6 localhost if hostname is localhost/127.0.0.1
+		let hostname = url.hostname;
+		if (hostname === 'localhost' || hostname === '127.0.0.1') {
+			hostname = '::1'; // Try IPv6 first, fallback in request error handler
+		}
+		
+		const options = {
+			hostname: hostname,
+			port: parseInt(url.port) || 8384,
+			path: `/rest/events?since=${lastId}&timeout=${this.timeout}`,
+			method: 'GET',
+			headers: {
+				'Authorization': `Bearer ${this.token}`,
+			}
+		};
+
+		const req = http.request(options, (res) => {
+			let body = '';
+
+			res.on('data', chunk => {
+				body += chunk;
+			});
+
+			res.on('end', () => {
+				const csrfErrorRegex = /CSRF Error/i;
+
+				if (res.statusCode === 401 || csrfErrorRegex.test(body)) {
+					console.error('Syncthing API key is invalid (401 Unauthorized or CSRF Error).');
+					this.status = "Invalid API key";
+					this.setStatusIcon('❌');
+					this.emit('status-update', {
+						status: this.status,
+						fileCompletion: NaN,
+						globalItems: NaN,
+						needItems: NaN,
+						connectedDevicesCount: NaN,
+						availableDevices: NaN
+					});
+					this.pollingTimeoutId = setTimeout(() => this.poll(), 5000);
+					return;
+				}
+
+				try {
+					const events = JSON.parse(body);
+
+					if (Array.isArray(events)) {
+						for (const event of events) {
+							this.lastEventId = Math.max(this.lastEventId ?? 0, event.id);
+							this.processEvent(event);
+						}
+					}
+				} catch (err) {
+					console.error('Failed to parse Syncthing events or unexpected response:', err);
+				} finally {
+					this.checkConnections();
+					this.emit('status-update', {
+						status: this.status,
+						fileCompletion: this.fileCompletion,
+						globalItems: this.globalItems,
+						needItems: this.needItems,
+						connectedDevicesCount: this.connectedDevicesCount,
+						availableDevices: this.availableDevices
+					});
+					this.pollingTimeoutId = setTimeout(() => this.poll(), this.timeout * 1000);
+				}
+			});
+		});
+
+		req.on('error', (err) => {
+			console.error('Syncthing connection error:', err);
+			this.status = "Connection error";
+			this.setStatusIcon('❌');
+			this.pollingTimeoutId = setTimeout(() => this.poll(), 5000);
+		});
+
+		req.end();
+	}
+
+	private processEvent(event: SyncthingEvent) {
+		console.log('Syncthing event:', event.type, event.data);
+
+		switch (event.type) {
+			case 'FolderCompletion':
+				const completion = event.data.completion;
+				const globalItems = event.data.globalItems;
+				const needItems = event.data.needItems;
+				
+				this.fileCompletion = completion;
+				this.globalItems = globalItems;
+				this.needItems = needItems;
+
+				if (completion !== 100) {
+					this.setStatusIcon('🟡');
+				} else {
+					this.setStatusIcon('🟢');
+				}
+				break;
+
+			case 'StateChanged':
+				const newStatus = event.data.to; // idle, scanning, scan-waiting
+				this.status = newStatus;
+
+				if (newStatus === "scanning") {
+					this.setStatusIcon('🟡');
+				} else if (newStatus === "idle") {
+					this.setStatusIcon('🟢');
+				}
+				break;
+
+			case 'DeviceDisconnected':
+				this.setStatusIcon('🔴');
+				this.status = "Device disconnected";
+				break;
+
+			case 'DeviceConnected':
+				this.setStatusIcon('🟢');
+				this.status = "Device connected";
+				break;
+
+			default:
+				// Handle other events as needed
+				break;
+		}
+	}
+
+	private checkConnections() {
+		if (!this.token) {
+			console.error('Syncthing API token is not set. Cannot check connections.');
+			this.status = "API key not set";
+			this.emit('status-update', {
+				status: this.status,
+				fileCompletion: NaN,
+				globalItems: NaN,
+				needItems: NaN,
+				connectedDevicesCount: NaN,
+				availableDevices: NaN
+			});
+			return;
+		}
+
+		// Parse URL for hostname and port
+		const url = new URL(this.baseUrl);
+
+		// Use IPv6 localhost if hostname is localhost/127.0.0.1
+		let hostname = url.hostname;
+		if (hostname === 'localhost' || hostname === '127.0.0.1') {
+			hostname = '::1'; // Try IPv6 first, fallback in request error handler
+		}
+
+		const options = {
+			hostname: hostname,
+			port: parseInt(url.port) || 8384,
+			path: '/rest/system/connections',
+			method: 'GET',
+			headers: {
+				'Authorization': `Bearer ${this.token}`,
+			}
+		};
+
+		const req = http.request(options, (res) => {
+			let body = '';
+
+			res.on('data', chunk => {
+				body += chunk;
+			});
+
+			res.on('end', () => {
+				const csrfErrorRegex = /CSRF Error/i;
+
+				if (res.statusCode === 401 || csrfErrorRegex.test(body)) {
+					console.error('Syncthing API key is invalid (401 Unauthorized or CSRF Error).');
+					this.status = "Invalid API key";
+					return;
+				}
+
+				try {
+					const data: ConnectionsResponse = JSON.parse(body);
+					const connectionsArray = Object.values(data.connections);
+
+					this.availableDevices = connectionsArray.length;
+					this.connectedDevicesCount = connectionsArray.filter(conn => conn.connected).length;
+
+					// Update status based on connections
+					if (this.connectedDevicesCount === 0) {
+						this.setStatusIcon('🔴');
+						this.status = "No devices connected";
+					} else if (this.status === "idle") {
+						this.setStatusIcon('🟢');
+					}
+				} catch (err) {
+					console.error('Failed to parse Syncthing connections or unexpected response:', err);
+				} finally {
+					this.emit('status-update', {
+						status: this.status,
+						fileCompletion: this.fileCompletion,
+						globalItems: this.globalItems,
+						needItems: this.needItems,
+						connectedDevicesCount: this.connectedDevicesCount,
+						availableDevices: this.availableDevices
+					});
+				}
+			});
+		});
+
+		req.on('error', (err) => {
+			console.error('Syncthing connections API error:', err);
+		});
+
+		req.end();
+	}
+
+	/**
+	 * Check if Syncthing is running using Node.js HTTP requests
+	 */
+	public async isSyncthingRunning(): Promise<boolean> {
+		return new Promise((resolve) => {
+			// Parse URL for hostname and port
+			const url = new URL(this.baseUrl);
+			
+			// Use IPv6 localhost if hostname is localhost/127.0.0.1
+			let hostname = url.hostname;
+			if (hostname === 'localhost' || hostname === '127.0.0.1') {
+				hostname = '::1'; // Try IPv6 first, fallback in request error handler
+			}
+			
+			const options = {
+				hostname: hostname,
+				port: parseInt(url.port) || 8384,
+				path: '/',
+				method: 'GET',
+				timeout: 2000, // 2 second timeout
+			};
+
+			const req = http.request(options, (res) => {
+				// If we get any response, Syncthing is running
+				resolve(true);
+			});
+
+			req.on('error', (err) => {
+				console.log('Syncthing connection error:', err.message);
+				// ECONNREFUSED means definitely not running
+				if (err.message.includes('ECONNREFUSED')) {
+					resolve(false);
+				} else {
+					// Other errors might mean it's running but auth required
+					resolve(false);
+				}
+			});
+
+			req.on('timeout', () => {
+				req.destroy();
+				resolve(false);
+			});
+
+			req.end();
+		});
+	}
+}
+
 const UPDATE_INTERVAL = 5000;
 const SYNCTHING_CONTAINER_URL = "http://127.0.0.1:8384/";
 const SYNCTHING_CORS_PROXY_CONTAINER_URL = "http://127.0.0.1:8380/";
@@ -50,12 +404,16 @@ export default class SyncthingLauncher extends Plugin {
 
 	private syncthingInstance: any | null = null;
 	private syncthingLastSyncDate: string = "no data";
+	monitor: SyncthingMonitor;
 
 	private statusBarConnectionIconItem: HTMLElement | null = this.addStatusBarItem();
 	private statusBarLastSyncTextItem: HTMLElement | null = this.addStatusBarItem();
 
 	async onload() {
 		await this.loadSettings();
+
+		// Initialize monitor
+		this.monitor = new SyncthingMonitor();
 
 		// Detect mobile platform
 		this.isMobile = this.detectMobilePlatform();
@@ -76,7 +434,7 @@ export default class SyncthingLauncher extends Plugin {
 		this.statusBarConnectionIconItem?.setAttribute('data-tooltip-position', 'top');
 
 		this.statusBarConnectionIconItem?.onClickEvent((event) => {
-			this.isSyncthingRunning().then(isRunning => {
+			this.monitor.isSyncthingRunning().then(isRunning => {
 				if (!isRunning) {
 					new Notice('Starting Syncthing!');
 					this.startSyncthing();
@@ -88,12 +446,15 @@ export default class SyncthingLauncher extends Plugin {
 			}
 		)});
 
+		// Start monitoring with new approach
+		this.startStatusMonitoring();
+
 		// Update syncthing the status bar item
 		this.updateStatusBar();
 
-		// Register tick interval
+		// Register tick interval for last sync date updates
 		this.registerInterval(
-			window.setInterval(() => this.updateStatusBar(), UPDATE_INTERVAL)
+			window.setInterval(() => this.updateLastSyncDate(), UPDATE_INTERVAL)
 		);
 
 		// Register settings tab
@@ -111,9 +472,61 @@ export default class SyncthingLauncher extends Plugin {
 
 	onunload() {
 		window.removeEventListener('beforeunload', this.handleBeforeUnload.bind(this));
+		this.monitor.stopMonitoring();
 	}
 
 	// --- Logic ---
+
+	startStatusMonitoring() {
+		if (!this.settings.syncthingApiKey) {
+			this.setStatusIcon('❌');
+			console.log('No API key set, skipping status monitoring');
+			return;
+		}
+
+		const baseUrl = this.getSyncthingURL();
+		this.monitor.startMonitoring(this.settings, this.setStatusIcon, baseUrl);
+
+		// Listen for status updates
+		this.monitor.on('status-update', (data) => {
+			// Update status bar with real-time information
+			this.updateStatusBarFromMonitor(data);
+		});
+	}
+
+	private setStatusIcon = (icon: string) => {
+		if (this.statusBarConnectionIconItem) {
+			this.statusBarConnectionIconItem.setText(icon);
+			
+			// Update tooltip based on status
+			let tooltip = `Syncthing: ${this.monitor.status}`;
+			if (this.monitor.availableDevices > 0) {
+				tooltip += `\nDevices: ${this.monitor.connectedDevicesCount}/${this.monitor.availableDevices}`;
+			}
+			if (this.monitor.fileCompletion !== undefined && !isNaN(this.monitor.fileCompletion)) {
+				tooltip += `\nSync: ${this.monitor.fileCompletion.toFixed(1)}%`;
+			}
+			this.statusBarConnectionIconItem.setAttribute('title', tooltip);
+			this.statusBarConnectionIconItem.ariaLabel = tooltip;
+		}
+	}
+
+	private updateStatusBarFromMonitor(data: any) {
+		// Update icon based on status
+		if (data.status === "Invalid API key") {
+			this.setStatusIcon('❌');
+		} else if (data.status === "API key not set") {
+			this.setStatusIcon('❌');
+		} else if (data.connectedDevicesCount === 0) {
+			this.setStatusIcon('🔴');
+		} else if (data.status === "scanning") {
+			this.setStatusIcon('🟡');
+		} else if (data.fileCompletion !== undefined && data.fileCompletion < 100) {
+			this.setStatusIcon('🟡');
+		} else {
+			this.setStatusIcon('🟢');
+		}
+	}
 
 	handleBeforeUnload(event: any) {
 		// Kill syncthing if running and set in settings
@@ -124,7 +537,7 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	async startSyncthing() {
-		this.isSyncthingRunning().then(async isRunning => {
+		this.monitor.isSyncthingRunning().then(async isRunning => {
 			// Check if already running
 			if (isRunning) {
 				console.log('Syncthing is already running');
@@ -222,11 +635,19 @@ export default class SyncthingLauncher extends Plugin {
 				this.syncthingInstance.on('exit', (code: any) => {
 					console.log(`child process exited with code ${code}`);
 				});
+
+				// Start monitoring after a short delay to allow Syncthing to start
+				setTimeout(() => {
+					this.startStatusMonitoring();
+				}, 2000);
 			}
 		});
 	}
 
 	stopSyncthing(): void {
+		// Stop monitoring
+		this.monitor.stopMonitoring();
+
 		// Mobile mode or mobile platform - nothing to stop locally
 		if (this.isMobile || this.settings.mobileMode) {
 			console.log('Mobile mode: No local Syncthing to stop');
@@ -280,21 +701,12 @@ export default class SyncthingLauncher extends Plugin {
 		}
 	}
 
+	/**
+	 * Use Node.js HTTP for config operations to match the monitoring approach
+	 */
 	async pauseSyncthing(): Promise<boolean> {
 		try {
 			const baseUrl = this.getSyncthingURL();
-			
-			// Mobile mode or mobile platform - pause via API if possible
-			if (this.isMobile || this.settings.mobileMode) {
-				await axios.post(`${baseUrl}/rest/config/options`, 
-					{ ...await this.getSyncthingConfig(), options: { globalAnnEnabled: false } },
-					{ headers: { 'X-API-Key': this.settings.syncthingApiKey } }
-				);
-				return true;
-			}
-
-			// For local instances, we can't really "pause" - we would need to stop
-			// But we can pause all folders
 			const config = await this.getSyncthingConfig();
 			
 			// Pause all folders
@@ -302,11 +714,7 @@ export default class SyncthingLauncher extends Plugin {
 				folder.paused = true;
 			}
 			
-			await axios.post(`${baseUrl}/rest/config`, config, {
-				headers: { 'X-API-Key': this.settings.syncthingApiKey }
-			});
-			
-			return true;
+			return await this.updateSyncthingConfig(config);
 		} catch (error) {
 			console.error('Failed to pause Syncthing:', error);
 			return false;
@@ -316,17 +724,6 @@ export default class SyncthingLauncher extends Plugin {
 	async resumeSyncthing(): Promise<boolean> {
 		try {
 			const baseUrl = this.getSyncthingURL();
-			
-			// Mobile mode or mobile platform - resume via API if possible  
-			if (this.isMobile || this.settings.mobileMode) {
-				await axios.post(`${baseUrl}/rest/config/options`,
-					{ ...await this.getSyncthingConfig(), options: { globalAnnEnabled: true } },
-					{ headers: { 'X-API-Key': this.settings.syncthingApiKey } }
-				);
-				return true;
-			}
-
-			// For local instances, resume all folders
 			const config = await this.getSyncthingConfig();
 			
 			// Resume all folders
@@ -334,25 +731,97 @@ export default class SyncthingLauncher extends Plugin {
 				folder.paused = false;
 			}
 			
-			await axios.post(`${baseUrl}/rest/config`, config, {
-				headers: { 'X-API-Key': this.settings.syncthingApiKey }
-			});
-			
-			return true;
+			return await this.updateSyncthingConfig(config);
 		} catch (error) {
 			console.error('Failed to resume Syncthing:', error);
 			return false;
 		}
 	}
 
+	/**
+	 * Get Syncthing config using Node.js HTTP
+	 */
 	async getSyncthingConfig(): Promise<any> {
-		const baseUrl = this.getSyncthingURL();
+		return new Promise((resolve, reject) => {
+			if (!this.settings.syncthingApiKey) {
+				reject(new Error('API key not set'));
+				return;
+			}
+
+			const url = new URL(this.getSyncthingURL());
 			
-		const response = await axios.get(`${baseUrl}/rest/config`, {
-			headers: { 'X-API-Key': this.settings.syncthingApiKey }
+			// Use IPv6 localhost if hostname is localhost/127.0.0.1
+			let hostname = url.hostname;
+			if (hostname === 'localhost' || hostname === '127.0.0.1') {
+				hostname = '::1'; // Try IPv6 first, fallback in request error handler
+			}
+			
+			const options = {
+				hostname: hostname,
+				port: parseInt(url.port) || 8384,
+				path: '/rest/config',
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${this.settings.syncthingApiKey}`,
+				}
+			};
+
+			const req = http.request(options, (res) => {
+				let body = '';
+				res.on('data', chunk => body += chunk);
+				res.on('end', () => {
+					try {
+						resolve(JSON.parse(body));
+					} catch (error) {
+						reject(error);
+					}
+				});
+			});
+
+			req.on('error', reject);
+			req.end();
 		});
-		
-		return response.data;
+	}
+
+	/**
+	 * Update Syncthing config using Node.js HTTP
+	 */
+	async updateSyncthingConfig(config: any): Promise<boolean> {
+		return new Promise((resolve) => {
+			if (!this.settings.syncthingApiKey) {
+				resolve(false);
+				return;
+			}
+
+			const url = new URL(this.getSyncthingURL());
+			const postData = JSON.stringify(config);
+			
+			// Use IPv6 localhost if hostname is localhost/127.0.0.1
+			let hostname = url.hostname;
+			if (hostname === 'localhost' || hostname === '127.0.0.1') {
+				hostname = '::1'; // Try IPv6 first, fallback in request error handler
+			}
+			
+			const options = {
+				hostname: hostname,
+				port: parseInt(url.port) || 8384,
+				path: '/rest/config',
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.syncthingApiKey}`,
+					'Content-Type': 'application/json',
+					'Content-Length': Buffer.byteLength(postData)
+				}
+			};
+
+			const req = http.request(options, (res) => {
+				resolve(res.statusCode === 200);
+			});
+
+			req.on('error', () => resolve(false));
+			req.write(postData);
+			req.end();
+		});
 	}
 
 	async startSyncthingDockerStack() {
@@ -456,7 +925,9 @@ export default class SyncthingLauncher extends Plugin {
 				console.log('Could not store port file:', error);
 			}
 		}
-	}	getSyncthingURL(): string {
+	}
+
+	getSyncthingURL(): string {
 		// Mobile mode - always use remote URL
 		if (this.isMobile || this.settings.mobileMode) {
 			console.log(`Using mobile/remote URL: ${this.settings.remoteUrl}`);
@@ -480,119 +951,10 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	/**
-	 * Modern status detection using Obsidian's requestUrl API to bypass CORS restrictions.
-	 * This method properly handles Syncthing's status detection without false positives.
-	 * 
-	 * @returns Promise<boolean> true if Syncthing is running and accessible, false otherwise
+	 * Use the monitor's improved status detection
 	 */
 	async isSyncthingRunning(): Promise<boolean> {
-		try {
-			const baseUrl = this.getSyncthingURL();
-			console.log('Using configured remoteUrl:', baseUrl);
-			
-			// For mobile/remote mode, always use API key and use requestUrl for CORS bypass
-			if (this.isMobile || this.settings.mobileMode) {
-				if (!this.settings.syncthingApiKey) {
-					console.log('Mobile mode requires API key');
-					return false;
-				}
-				
-				const response = await requestUrl({
-					url: baseUrl,
-					method: 'GET',
-					headers: {
-						'X-API-Key': this.settings.syncthingApiKey,
-					}
-				});
-				
-				return response.status === 200;
-			}
-			
-			// For desktop/local instances, use modern detection approach
-			// Try with requestUrl first to avoid CORS issues entirely
-			try {
-				const response = await requestUrl({
-					url: baseUrl,
-					method: 'GET'
-				});
-				
-				// If we get here, Syncthing is definitely running
-				return response.status === 200;
-				
-			} catch (noAuthError: any) {
-				// requestUrl failed - check the error type
-				console.log('requestUrl failed with:', noAuthError);
-				
-				// For requestUrl errors, check the underlying error
-				if (noAuthError.status === 401 || noAuthError.status === 403) {
-					// Authentication required but server is running
-					// Try again with API key if available
-					if (this.settings.syncthingApiKey) {
-						try {
-							const response = await requestUrl({
-								url: baseUrl,
-								method: 'GET',
-								headers: {
-									'X-API-Key': this.settings.syncthingApiKey,
-								}
-							});
-							return response.status === 200;
-						} catch (authError: any) {
-							console.log('API key request failed:', authError);
-							// If API key request fails, server is still running if it's auth-related
-							return authError.status === 401 || authError.status === 403;
-						}
-					}
-					// Server is running but needs authentication
-					return true;
-				}
-				
-				// Connection refused or network error means server is not running
-				if (noAuthError.status === 0 || 
-					noAuthError.message?.includes('ERR_CONNECTION_REFUSED') ||
-					noAuthError.message?.includes('ECONNREFUSED') ||
-					noAuthError.message?.includes('Failed to fetch')) {
-					return false;
-				}
-				
-				// Other HTTP status codes mean server is running
-				if (noAuthError.status >= 200 && noAuthError.status < 600) {
-					return true;
-				}
-				
-				// Fallback to axios as secondary method for edge cases
-				try {
-					const response = await axios.get(baseUrl, { timeout: 2000 });
-					return response.status === 200;
-				} catch (axiosError: any) {
-					// Axios ERR_CONNECTION_REFUSED means definitely not running
-					if (axiosError.code === 'ERR_CONNECTION_REFUSED') {
-						return false;
-					}
-					
-					// ERR_FAILED with 200 OK in browser console means CORS-wrapped success
-					// This happens when server is running but CORS blocks the response
-					if (axiosError.code === 'ERR_NETWORK' && 
-						axiosError.message === 'Network Error' && 
-						!axiosError.response) {
-						// In modern browsers, this typically means server responded but CORS blocked it
-						// However, we can't be 100% certain, so we'll be conservative
-						return false;
-					}
-					
-					// If we have a response object, the server is running
-					if (axiosError.response) {
-						return true;
-					}
-					
-					// Unknown error - assume not running
-					return false;
-				}
-			}
-		} catch (error: any) {
-			console.log('Unexpected error in isSyncthingRunning:', error);
-			return false;
-		}
+		return await this.monitor.isSyncthingRunning();
 	}
 
 	checkDockerStatus(): boolean {
@@ -618,32 +980,35 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	updateStatusBar(): void {
-		this.isSyncthingRunning().then(isRunning => {
-
-			// Display text in status bar
-			if (isRunning) {
-				this.getLastSyncDate().then(lastSyncDate => {
-					if (lastSyncDate !== null)
-					{
-						const optionsDate: Intl.DateTimeFormatOptions = { day: '2-digit', month: '2-digit', year: '2-digit' };
-						const formattedDate = lastSyncDate.toLocaleDateString('en-GB', optionsDate).split( '/' ).join( '.' );
-
-						const optionsTime: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', hour12: false };
-						const formattedTime = lastSyncDate.toLocaleTimeString('en-GB', optionsTime); 
-
-						this.syncthingLastSyncDate = `${formattedDate} ${formattedTime}`;
-					}
-					else {
-						this.syncthingLastSyncDate = "no data";
-					}
-				});
-			}
-			
+		this.monitor.isSyncthingRunning().then(isRunning => {
 			// Display status icon in status bar
 			if (this.statusBarConnectionIconItem) {
-				this.statusBarConnectionIconItem.setText(isRunning ? "🔵" : "⚫");
-				this.statusBarConnectionIconItem.ariaLabel = isRunning ? "Syncthing connected (click to stop)" : "Click to start Syncthing";
+				if (!isRunning) {
+					this.statusBarConnectionIconItem.setText("⚫");
+					this.statusBarConnectionIconItem.ariaLabel = "Click to start Syncthing";
+				}
+				// If running, the monitor will update the icon via setStatusIcon
+				
 				this.statusBarConnectionIconItem.addClasses(['plugin-editor-status', 'mouse-pointer']);
+			}
+		});
+	}
+
+	/**
+	 * Update last sync date - called periodically
+	 */
+	updateLastSyncDate(): void {
+		this.getLastSyncDate().then(lastSyncDate => {
+			if (lastSyncDate !== null) {
+				const optionsDate: Intl.DateTimeFormatOptions = { day: '2-digit', month: '2-digit', year: '2-digit' };
+				const formattedDate = lastSyncDate.toLocaleDateString('en-GB', optionsDate).split( '/' ).join( '.' );
+
+				const optionsTime: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', hour12: false };
+				const formattedTime = lastSyncDate.toLocaleTimeString('en-GB', optionsTime); 
+
+				this.syncthingLastSyncDate = `${formattedDate} ${formattedTime}`;
+			} else {
+				this.syncthingLastSyncDate = "no data";
 			}
 
 			if (this.statusBarLastSyncTextItem) {
@@ -677,6 +1042,9 @@ export default class SyncthingLauncher extends Plugin {
 		}
 	}
 
+	/**
+	 * Download Syncthing executable using Node.js HTTP
+	 */
 	async downloadSyncthingExecutable(): Promise<boolean> {
 		try {
 			new Notice('Downloading Syncthing executable... Please wait.', 8000);
@@ -694,40 +1062,72 @@ export default class SyncthingLauncher extends Plugin {
 			// Download URL from our GitHub release - use stable release for binaries
 			const downloadUrl = `https://github.com/muxammadreza/Obsidian-Syncthing-Launcher/releases/download/v1.2.2/${fileName}`;
 			
-			// Download the file using Obsidian's requestUrl (bypasses CORS)
-			const response = await requestUrl({
-				url: downloadUrl,
-				method: 'GET'
-			});
-
-			const data = new Uint8Array(response.arrayBuffer);
-
-			// Create syncthing directory if it doesn't exist
-			const syncthingDir = `${this.getPluginAbsolutePath()}syncthing`;
+			// Use Node.js https module for download
+			const https = require('https');
+			const url = require('url');
 			
-			if (typeof require !== 'undefined') {
-				const fs = require('fs');
-				const path = require('path');
+			return new Promise((resolve) => {
+				const parsedUrl = url.parse(downloadUrl);
 				
-				// Create directory if it doesn't exist
-				if (!fs.existsSync(syncthingDir)) {
-					fs.mkdirSync(syncthingDir, { recursive: true });
-				}
+				const options = {
+					hostname: parsedUrl.hostname,
+					port: 443,
+					path: parsedUrl.path,
+					method: 'GET'
+				};
 
-				// Write the executable file
-				const executablePath = this.getSyncthingExecutablePath();
-				fs.writeFileSync(executablePath, data);
-				
-				// Make executable on Unix systems
-				if (process.platform !== 'win32') {
-					fs.chmodSync(executablePath, '755');
-				}
-				
-				new Notice('Syncthing executable downloaded and installed successfully!', 5000);
-				return true;
-			} else {
-				throw new Error('File system operations not available');
-			}
+				const req = https.request(options, (res: any) => {
+					if (res.statusCode !== 200) {
+						resolve(false);
+						return;
+					}
+
+					const chunks: any[] = [];
+					res.on('data', (chunk: any) => chunks.push(chunk));
+					
+					res.on('end', () => {
+						try {
+							const data = Buffer.concat(chunks);
+
+							// Create syncthing directory if it doesn't exist
+							const syncthingDir = `${this.getPluginAbsolutePath()}syncthing`;
+							
+							if (typeof require !== 'undefined') {
+								const fs = require('fs');
+								
+								// Create directory if it doesn't exist
+								if (!fs.existsSync(syncthingDir)) {
+									fs.mkdirSync(syncthingDir, { recursive: true });
+								}
+
+								// Write the executable file
+								const executablePath = this.getSyncthingExecutablePath();
+								fs.writeFileSync(executablePath, data);
+								
+								// Make executable on Unix systems
+								if (process.platform !== 'win32') {
+									fs.chmodSync(executablePath, '755');
+								}
+								
+								new Notice('Syncthing executable downloaded and installed successfully!', 5000);
+								resolve(true);
+							} else {
+								resolve(false);
+							}
+						} catch (error) {
+							console.error('Failed to save downloaded file:', error);
+							resolve(false);
+						}
+					});
+				});
+
+				req.on('error', (error: any) => {
+					console.error('Download failed:', error);
+					resolve(false);
+				});
+
+				req.end();
+			});
 
 		} catch (error) {
 			console.error('Failed to download Syncthing executable:', error);
@@ -783,35 +1183,58 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	/**
-	 * Get the last sync date using modern requestUrl API to bypass CORS.
-	 * 
-	 * @returns Promise<Date | null> The last sync date or null if unavailable
+	 * Get the last sync date using Node.js HTTP
 	 */
 	async getLastSyncDate() {
-		try {
-			const baseUrl = this.getSyncthingURL();
-			// Ensure proper URL construction with trailing slash
-			const url = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+		return new Promise<Date | null>((resolve) => {
+			if (!this.settings.syncthingApiKey || !this.settings.vaultFolderID) {
+				resolve(null);
+				return;
+			}
+
+			const url = new URL(this.getSyncthingURL());
 			
-			const response = await requestUrl({
-				url: url + `rest/db/status?folder=${this.settings.vaultFolderID}`,
+			// Use IPv6 localhost if hostname is localhost/127.0.0.1
+			let hostname = url.hostname;
+			if (hostname === 'localhost' || hostname === '127.0.0.1') {
+				hostname = '::1'; // Try IPv6 first, fallback in request error handler
+			}
+			
+			const options = {
+				hostname: hostname,
+				port: parseInt(url.port) || 8384,
+				path: `/rest/db/status?folder=${this.settings.vaultFolderID}`,
 				method: 'GET',
 				headers: {
-					'X-API-Key': this.settings.syncthingApiKey,
+					'Authorization': `Bearer ${this.settings.syncthingApiKey}`,
 				}
+			};
+
+			const req = http.request(options, (res) => {
+				let body = '';
+				res.on('data', chunk => body += chunk);
+				res.on('end', () => {
+					try {
+						const data = JSON.parse(body);
+						if (data.stateChanged) {
+							resolve(new Date(data.stateChanged));
+						} else {
+							resolve(null);
+						}
+					} catch (error) {
+						console.error('Failed to parse sync date response:', error);
+						resolve(null);
+					}
+				});
 			});
 
-			if (response.json && response.json.stateChanged) {
-				return new Date(response.json.stateChanged);
-			} else {
-				console.log(response);
-				console.log('No sync data found');
-				return null;
-			}
-		} catch (error) {
-			console.error('Failed to get last sync date:', error);
-			return null;
-		}
+			req.on('error', (error) => {
+				console.error('Failed to get last sync date:', error);
+				resolve(null);
+			});
+
+			req.end();
+		});
 	}
 
 	// --- Settings ---
@@ -822,6 +1245,11 @@ export default class SyncthingLauncher extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+		// Restart monitoring with new settings
+		this.monitor.stopMonitoring();
+		setTimeout(() => {
+			this.startStatusMonitoring();
+		}, 1000);
 	}
 }
 
@@ -871,6 +1299,27 @@ class SettingTab extends PluginSettingTab {
 				statusIndicator.setText('❌ Error checking status');
 			}
 		}, 500);
+
+		// Real-time status updates from monitor
+		const updateStatusFromMonitor = (data: any) => {
+			let statusText = '❓ Unknown';
+			if (data.status === "Invalid API key") {
+				statusText = '❌ Invalid API key';
+			} else if (data.status === "API key not set") {
+				statusText = '❌ API key not set';
+			} else if (data.connectedDevicesCount === 0) {
+				statusText = '🔴 No devices connected';
+			} else if (data.status === "scanning") {
+				statusText = '🟡 Scanning';
+			} else if (data.fileCompletion !== undefined && data.fileCompletion < 100) {
+				statusText = `🟡 Syncing (${data.fileCompletion.toFixed(1)}%)`;
+			} else {
+				statusText = '🟢 Connected';
+			}
+			statusIndicator.setText(statusText);
+		};
+
+		this.plugin.monitor.on('status-update', updateStatusFromMonitor);
 
 		// Control buttons
 		new Setting(statusSection)
