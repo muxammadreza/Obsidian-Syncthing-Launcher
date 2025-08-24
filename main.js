@@ -998,32 +998,75 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       }
       let platformPattern;
       let expectedExecutableName;
+      console.log(`Detected platform: ${process.platform}, architecture: ${process.arch}`);
       if (process.platform === "win32") {
         const arch = process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : "386";
         platformPattern = `syncthing-windows-${arch}-v${releaseInfo.version}`;
         expectedExecutableName = "syncthing.exe";
       } else if (process.platform === "darwin") {
+        let arch;
         if (process.arch === "arm64") {
-          platformPattern = `syncthing-macos-arm64-v${releaseInfo.version}`;
+          arch = "arm64";
         } else if (process.arch === "x64") {
-          platformPattern = `syncthing-macos-amd64-v${releaseInfo.version}`;
+          arch = "amd64";
         } else {
-          platformPattern = `syncthing-macos-universal-v${releaseInfo.version}`;
+          console.log(`Unknown macOS architecture ${process.arch}, trying universal build`);
+          arch = "universal";
         }
+        platformPattern = `syncthing-macos-${arch}-v${releaseInfo.version}`;
         expectedExecutableName = "syncthing";
+        console.log(`Selected macOS pattern: ${platformPattern}`);
       } else {
         const arch = process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : process.arch === "arm" ? "arm" : "386";
         platformPattern = `syncthing-linux-${arch}-v${releaseInfo.version}`;
         expectedExecutableName = "syncthing";
       }
+      console.log(`Looking for release asset matching: ${platformPattern}`);
+      console.log(`Available assets: ${releaseInfo.assets.map((a) => a.name).join(", ")}`);
       const asset = releaseInfo.assets.find(
         (asset2) => asset2.name.startsWith(platformPattern)
       );
       if (!asset) {
+        if (process.platform === "darwin") {
+          console.log("Primary macOS asset not found, trying fallbacks...");
+          const universalPattern = `syncthing-macos-universal-v${releaseInfo.version}`;
+          const universalAsset = releaseInfo.assets.find(
+            (asset2) => asset2.name.startsWith(universalPattern)
+          );
+          if (universalAsset) {
+            console.log(`Found universal macOS build: ${universalAsset.name}`);
+            new import_obsidian.Notice(`Using universal macOS build for ${process.arch} architecture`, 5e3);
+            return this.downloadAndInstallAsset(universalAsset, expectedExecutableName);
+          }
+          if (process.arch === "x64") {
+            const amd64Pattern = `syncthing-macos-amd64-v${releaseInfo.version}`;
+            const amd64Asset = releaseInfo.assets.find(
+              (asset2) => asset2.name.startsWith(amd64Pattern)
+            );
+            if (amd64Asset) {
+              console.log(`Found amd64 macOS build: ${amd64Asset.name}`);
+              new import_obsidian.Notice(`Using amd64 macOS build for x64 architecture`, 5e3);
+              return this.downloadAndInstallAsset(amd64Asset, expectedExecutableName);
+            }
+          }
+        }
         new import_obsidian.Notice(`No Syncthing release found for ${process.platform} ${process.arch}. Available assets: ${releaseInfo.assets.map((a) => a.name).join(", ")}`, 1e4);
         return false;
       }
-      new import_obsidian.Notice(`Downloading Syncthing ${releaseInfo.version} for ${process.platform} ${process.arch}... Please wait.`, 8e3);
+      return this.downloadAndInstallAsset(asset, expectedExecutableName);
+    } catch (error) {
+      console.error("Failed to download Syncthing executable:", error);
+      new import_obsidian.Notice(`Failed to download Syncthing executable: ${error.message}. Please download manually from GitHub release.`, 1e4);
+      return false;
+    }
+  }
+  /**
+   * Download and install a specific asset
+   */
+  async downloadAndInstallAsset(asset, expectedExecutableName) {
+    var _a, _b;
+    try {
+      new import_obsidian.Notice(`Downloading Syncthing ${((_a = asset.name.match(/v(\d+\.\d+\.\d+)/)) == null ? void 0 : _a[1]) || "latest"} for ${process.platform} ${process.arch}... Please wait.`, 8e3);
       console.log(`Downloading Syncthing from: ${asset.browser_download_url}`);
       const archiveData = await this.downloadFile(asset.browser_download_url);
       if (!archiveData) {
@@ -1032,15 +1075,16 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       }
       const success = await this.extractAndInstallSyncthing(archiveData, asset.name, expectedExecutableName);
       if (success) {
-        new import_obsidian.Notice(`Syncthing ${releaseInfo.version} downloaded and installed successfully!`, 5e3);
+        const version = ((_b = asset.name.match(/v(\d+\.\d+\.\d+)/)) == null ? void 0 : _b[1]) || "latest";
+        new import_obsidian.Notice(`Syncthing ${version} downloaded and installed successfully!`, 5e3);
         return true;
       } else {
         new import_obsidian.Notice("Failed to extract and install Syncthing executable", 8e3);
         return false;
       }
     } catch (error) {
-      console.error("Failed to download Syncthing executable:", error);
-      new import_obsidian.Notice(`Failed to download Syncthing executable: ${error.message}. Please download manually from GitHub release.`, 1e4);
+      console.error("Failed to download and install asset:", error);
+      new import_obsidian.Notice(`Failed to download and install: ${error.message}`, 8e3);
       return false;
     }
   }
@@ -1178,7 +1222,9 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       const { spawn: spawn2 } = require("child_process");
       const tempZipPath = path.join(targetDir, "temp-syncthing.zip");
       fs.writeFileSync(tempZipPath, zipData);
+      console.log(`Saved ZIP archive to: ${tempZipPath} (${zipData.length} bytes)`);
       return new Promise((resolve) => {
+        var _a, _b;
         let extractCommand;
         let extractArgs;
         if (process.platform === "win32") {
@@ -1188,13 +1234,34 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
           extractCommand = "unzip";
           extractArgs = ["-o", tempZipPath, "-d", targetDir];
         }
+        console.log(`Extracting with command: ${extractCommand} ${extractArgs.join(" ")}`);
         const extractProcess = spawn2(extractCommand, extractArgs);
+        let stdout = "";
+        let stderr = "";
+        (_a = extractProcess.stdout) == null ? void 0 : _a.on("data", (data) => {
+          stdout += data.toString();
+        });
+        (_b = extractProcess.stderr) == null ? void 0 : _b.on("data", (data) => {
+          stderr += data.toString();
+        });
         extractProcess.on("close", (code) => {
+          console.log(`Extraction completed with code: ${code}`);
+          if (stdout)
+            console.log(`Extraction stdout: ${stdout}`);
+          if (stderr)
+            console.log(`Extraction stderr: ${stderr}`);
           try {
             if (fs.existsSync(tempZipPath)) {
               fs.unlinkSync(tempZipPath);
+              console.log("Cleaned up temporary ZIP file");
             }
             if (code === 0) {
+              try {
+                const contents = fs.readdirSync(targetDir);
+                console.log(`Contents of ${targetDir}: ${contents.join(", ")}`);
+              } catch (listError) {
+                console.log("Could not list directory contents:", listError);
+              }
               this.findAndCopyExecutable(targetDir, executableName).then(resolve);
             } else {
               console.error("Extraction failed with code:", code);
@@ -1273,12 +1340,15 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       const fs = require("fs");
       const path = require("path");
       const { exec: exec2 } = require("child_process");
+      console.log(`Looking for executable "${executableName}" in: ${extractDir}`);
       const findExecutable = (dir) => {
         const items = fs.readdirSync(dir);
+        console.log(`Searching in ${dir}: found items: ${items.join(", ")}`);
         for (const item of items) {
           const itemPath = path.join(dir, item);
           const stat = fs.statSync(itemPath);
           if (stat.isFile() && item === executableName) {
+            console.log(`\u2705 Found executable: ${itemPath}`);
             return itemPath;
           } else if (stat.isDirectory()) {
             const found = findExecutable(itemPath);
@@ -1290,7 +1360,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       };
       const executablePath = findExecutable(extractDir);
       if (!executablePath) {
-        console.error(`Executable ${executableName} not found in extracted archive`);
+        console.error(`\u274C Executable ${executableName} not found in extracted archive`);
         return false;
       }
       let finalPath;
@@ -1301,9 +1371,12 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       } else {
         finalPath = path.join(extractDir, "syncthing-linux");
       }
+      console.log(`Copying executable from ${executablePath} to ${finalPath}`);
       fs.copyFileSync(executablePath, finalPath);
+      console.log(`\u2705 Executable copied successfully`);
       if (process.platform !== "win32") {
         fs.chmodSync(finalPath, "755");
+        console.log("\u2705 Set executable permissions (755)");
         if (process.platform === "darwin") {
           try {
             await new Promise((resolve, reject) => {
@@ -1311,13 +1384,29 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
                 if (error && !error.message.includes("No such xattr")) {
                   console.log("Note: Could not remove quarantine attribute:", error.message);
                 } else {
-                  console.log("Removed macOS quarantine attribute from executable");
+                  console.log("\u2705 Removed macOS quarantine attribute from executable");
                 }
                 resolve();
               });
             });
           } catch (error) {
             console.log("Note: Could not remove quarantine attribute (non-fatal):", error);
+          }
+          try {
+            const fileTypeOutput = await new Promise((resolve) => {
+              exec2(`file "${finalPath}"`, (error, stdout) => {
+                resolve(stdout || "Could not determine file type");
+              });
+            });
+            console.log(`File type check: ${fileTypeOutput.trim()}`);
+            const archOutput = await new Promise((resolve) => {
+              exec2(`lipo -info "${finalPath}" 2>/dev/null || otool -hv "${finalPath}" 2>/dev/null || echo "Not a Mach-O binary"`, (error, stdout) => {
+                resolve(stdout || "Could not determine architecture");
+              });
+            });
+            console.log(`Architecture check: ${archOutput.trim()}`);
+          } catch (debugError) {
+            console.log("Debug checks failed (non-fatal):", debugError);
           }
         }
       }
@@ -1327,8 +1416,27 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         const stats = fs.statSync(finalPath);
         const mode = stats.mode;
         console.log(`Executable permissions: ${(mode & parseInt("777", 8)).toString(8)}`);
+        console.log(`File size: ${stats.size} bytes`);
         fs.accessSync(finalPath, fs.constants.F_OK | fs.constants.X_OK);
         console.log("\u2705 Executable permissions verified");
+        if (process.platform === "darwin") {
+          try {
+            const testOutput = await new Promise((resolve, reject) => {
+              exec2(`"${finalPath}" --version`, { timeout: 5e3 }, (error, stdout, stderr) => {
+                if (error) {
+                  reject(error);
+                } else {
+                  resolve(stdout.trim());
+                }
+              });
+            });
+            console.log("\u2705 Executable test run successful:", testOutput.split("\n")[0]);
+          } catch (testError) {
+            console.log("\u274C Executable test run failed:", testError.message);
+            console.log("This indicates the binary may not be compatible or corrupted");
+            return false;
+          }
+        }
       } catch (permError) {
         console.error("\u274C Executable permissions issue:", permError);
         throw new Error(`Executable not accessible: ${permError.message}`);
@@ -1562,6 +1670,43 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
         new import_obsidian.Notice("\u2705 Syncthing executable found and accessible");
       } else {
         new import_obsidian.Notice("\u274C Syncthing executable not found");
+      }
+    }));
+    new import_obsidian.Setting(binarySection).setName("Force Re-download and Test").setDesc("Force re-download the Syncthing executable and run a comprehensive test (useful for troubleshooting)").addButton((button) => button.setButtonText("Re-download & Test").setTooltip("Force re-download and test Syncthing binary thoroughly").onClick(async () => {
+      try {
+        await this.plugin.stopSyncthing();
+        await new Promise((resolve) => setTimeout(resolve, 1e3));
+        const executablePath = this.plugin.getSyncthingExecutablePath();
+        if (typeof require !== "undefined") {
+          const fs = require("fs");
+          const path = require("path");
+          try {
+            const syncthingDir = path.dirname(executablePath);
+            if (fs.existsSync(syncthingDir)) {
+              fs.rmSync(syncthingDir, { recursive: true, force: true });
+              console.log("Removed existing Syncthing directory for clean re-download");
+            }
+          } catch (removeError) {
+            console.log("Could not remove existing executable (non-fatal):", removeError);
+          }
+        }
+        new import_obsidian.Notice("Starting comprehensive re-download and test...", 5e3);
+        const success = await this.plugin.downloadSyncthingExecutable();
+        if (success) {
+          new import_obsidian.Notice("\u2705 Download successful! Running tests...", 3e3);
+          setTimeout(async () => {
+            const isExecutable = await this.plugin.checkExecutableExists();
+            if (isExecutable) {
+              new import_obsidian.Notice("\u2705 All tests passed! Syncthing is ready to use.", 5e3);
+            } else {
+              new import_obsidian.Notice("\u274C Tests failed. Check console for detailed logs.", 8e3);
+            }
+          }, 1e3);
+        } else {
+          new import_obsidian.Notice("\u274C Re-download failed. Check console for details.", 8e3);
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Test failed: ${error.message}`, 8e3);
       }
     }));
     new import_obsidian.Setting(binarySection).setName("Re-download Executable").setDesc("Force re-download the Syncthing executable (useful if you encounter permission or execution issues)").addButton((button) => button.setButtonText("Re-download").setTooltip("Force re-download Syncthing binary").onClick(async () => {

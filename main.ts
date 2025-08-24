@@ -1105,22 +1105,28 @@ export default class SyncthingLauncher extends Plugin {
 			let platformPattern: string;
 			let expectedExecutableName: string;
 			
+			console.log(`Detected platform: ${process.platform}, architecture: ${process.arch}`);
+			
 			if (process.platform === 'win32') {
 				// Windows - prefer amd64, fall back to 386 if needed
 				const arch = process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : '386';
 				platformPattern = `syncthing-windows-${arch}-v${releaseInfo.version}`;
 				expectedExecutableName = 'syncthing.exe';
 			} else if (process.platform === 'darwin') {
-				// macOS - prefer universal, fall back to specific arch
+				// macOS - be more specific about architecture selection
+				let arch: string;
 				if (process.arch === 'arm64') {
-					platformPattern = `syncthing-macos-arm64-v${releaseInfo.version}`;
+					arch = 'arm64';
 				} else if (process.arch === 'x64') {
-					platformPattern = `syncthing-macos-amd64-v${releaseInfo.version}`;
+					arch = 'amd64';
 				} else {
-					// Try universal first as fallback
-					platformPattern = `syncthing-macos-universal-v${releaseInfo.version}`;
+					// For unknown architectures, try universal first
+					console.log(`Unknown macOS architecture ${process.arch}, trying universal build`);
+					arch = 'universal';
 				}
+				platformPattern = `syncthing-macos-${arch}-v${releaseInfo.version}`;
 				expectedExecutableName = 'syncthing';
+				console.log(`Selected macOS pattern: ${platformPattern}`);
 			} else {
 				// Linux and other Unix-like systems
 				const arch = process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : process.arch === 'arm' ? 'arm' : '386';
@@ -1128,17 +1134,65 @@ export default class SyncthingLauncher extends Plugin {
 				expectedExecutableName = 'syncthing';
 			}
 
+			console.log(`Looking for release asset matching: ${platformPattern}`);
+			console.log(`Available assets: ${releaseInfo.assets.map((a: any) => a.name).join(', ')}`);
+
 			// Find the matching asset
 			const asset = releaseInfo.assets.find((asset: any) => 
 				asset.name.startsWith(platformPattern)
 			);
 
 			if (!asset) {
+				// For macOS, try fallback strategies
+				if (process.platform === 'darwin') {
+					console.log('Primary macOS asset not found, trying fallbacks...');
+					
+					// Try universal build
+					const universalPattern = `syncthing-macos-universal-v${releaseInfo.version}`;
+					const universalAsset = releaseInfo.assets.find((asset: any) => 
+						asset.name.startsWith(universalPattern)
+					);
+					
+					if (universalAsset) {
+						console.log(`Found universal macOS build: ${universalAsset.name}`);
+						new Notice(`Using universal macOS build for ${process.arch} architecture`, 5000);
+						return this.downloadAndInstallAsset(universalAsset, expectedExecutableName);
+					}
+					
+					// Try amd64 as final fallback for x64 systems
+					if (process.arch === 'x64') {
+						const amd64Pattern = `syncthing-macos-amd64-v${releaseInfo.version}`;
+						const amd64Asset = releaseInfo.assets.find((asset: any) => 
+							asset.name.startsWith(amd64Pattern)
+						);
+						
+						if (amd64Asset) {
+							console.log(`Found amd64 macOS build: ${amd64Asset.name}`);
+							new Notice(`Using amd64 macOS build for x64 architecture`, 5000);
+							return this.downloadAndInstallAsset(amd64Asset, expectedExecutableName);
+						}
+					}
+				}
+
 				new Notice(`No Syncthing release found for ${process.platform} ${process.arch}. Available assets: ${releaseInfo.assets.map((a: any) => a.name).join(', ')}`, 10000);
 				return false;
 			}
 
-			new Notice(`Downloading Syncthing ${releaseInfo.version} for ${process.platform} ${process.arch}... Please wait.`, 8000);
+			return this.downloadAndInstallAsset(asset, expectedExecutableName);
+
+		} catch (error) {
+			console.error('Failed to download Syncthing executable:', error);
+			new Notice(`Failed to download Syncthing executable: ${error.message}. Please download manually from GitHub release.`, 10000);
+			return false;
+		}
+	}
+
+	/**
+	 * Download and install a specific asset
+	 */
+	private async downloadAndInstallAsset(asset: any, expectedExecutableName: string): Promise<boolean> {
+		try {
+			new Notice(`Downloading Syncthing ${asset.name.match(/v(\d+\.\d+\.\d+)/)?.[1] || 'latest'} for ${process.platform} ${process.arch}... Please wait.`, 8000);
 			console.log(`Downloading Syncthing from: ${asset.browser_download_url}`);
 
 			// Download the archive
@@ -1151,16 +1205,16 @@ export default class SyncthingLauncher extends Plugin {
 			// Extract and install the executable
 			const success = await this.extractAndInstallSyncthing(archiveData, asset.name, expectedExecutableName);
 			if (success) {
-				new Notice(`Syncthing ${releaseInfo.version} downloaded and installed successfully!`, 5000);
+				const version = asset.name.match(/v(\d+\.\d+\.\d+)/)?.[1] || 'latest';
+				new Notice(`Syncthing ${version} downloaded and installed successfully!`, 5000);
 				return true;
 			} else {
 				new Notice('Failed to extract and install Syncthing executable', 8000);
 				return false;
 			}
-
 		} catch (error) {
-			console.error('Failed to download Syncthing executable:', error);
-			new Notice(`Failed to download Syncthing executable: ${error.message}. Please download manually from GitHub release.`, 10000);
+			console.error('Failed to download and install asset:', error);
+			new Notice(`Failed to download and install: ${error.message}`, 8000);
 			return false;
 		}
 	}
@@ -1330,6 +1384,7 @@ export default class SyncthingLauncher extends Plugin {
 			
 			const tempZipPath = path.join(targetDir, 'temp-syncthing.zip');
 			fs.writeFileSync(tempZipPath, zipData);
+			console.log(`Saved ZIP archive to: ${tempZipPath} (${zipData.length} bytes)`);
 
 			// Try to extract using system unzip command
 			return new Promise((resolve) => {
@@ -1346,16 +1401,41 @@ export default class SyncthingLauncher extends Plugin {
 					extractArgs = ['-o', tempZipPath, '-d', targetDir];
 				}
 
+				console.log(`Extracting with command: ${extractCommand} ${extractArgs.join(' ')}`);
 				const extractProcess = spawn(extractCommand, extractArgs);
 				
+				let stdout = '';
+				let stderr = '';
+				
+				extractProcess.stdout?.on('data', (data: any) => {
+					stdout += data.toString();
+				});
+				
+				extractProcess.stderr?.on('data', (data: any) => {
+					stderr += data.toString();
+				});
+				
 				extractProcess.on('close', (code: number) => {
+					console.log(`Extraction completed with code: ${code}`);
+					if (stdout) console.log(`Extraction stdout: ${stdout}`);
+					if (stderr) console.log(`Extraction stderr: ${stderr}`);
+					
 					try {
 						// Clean up temp file
 						if (fs.existsSync(tempZipPath)) {
 							fs.unlinkSync(tempZipPath);
+							console.log('Cleaned up temporary ZIP file');
 						}
 
 						if (code === 0) {
+							// List contents of target directory for debugging
+							try {
+								const contents = fs.readdirSync(targetDir);
+								console.log(`Contents of ${targetDir}: ${contents.join(', ')}`);
+							} catch (listError) {
+								console.log('Could not list directory contents:', listError);
+							}
+							
 							// Find the extracted executable
 							this.findAndCopyExecutable(targetDir, executableName).then(resolve);
 						} else {
@@ -1449,15 +1529,19 @@ export default class SyncthingLauncher extends Plugin {
 			const path = require('path');
 			const { exec } = require('child_process');
 
+			console.log(`Looking for executable "${executableName}" in: ${extractDir}`);
+
 			// Recursively search for the executable
 			const findExecutable = (dir: string): string | null => {
 				const items = fs.readdirSync(dir);
+				console.log(`Searching in ${dir}: found items: ${items.join(', ')}`);
 				
 				for (const item of items) {
 					const itemPath = path.join(dir, item);
 					const stat = fs.statSync(itemPath);
 					
 					if (stat.isFile() && item === executableName) {
+						console.log(`✅ Found executable: ${itemPath}`);
 						return itemPath;
 					} else if (stat.isDirectory()) {
 						const found = findExecutable(itemPath);
@@ -1469,7 +1553,7 @@ export default class SyncthingLauncher extends Plugin {
 
 			const executablePath = findExecutable(extractDir);
 			if (!executablePath) {
-				console.error(`Executable ${executableName} not found in extracted archive`);
+				console.error(`❌ Executable ${executableName} not found in extracted archive`);
 				return false;
 			}
 
@@ -1483,12 +1567,16 @@ export default class SyncthingLauncher extends Plugin {
 				finalPath = path.join(extractDir, 'syncthing-linux');
 			}
 
+			console.log(`Copying executable from ${executablePath} to ${finalPath}`);
+
 			// Copy the executable
 			fs.copyFileSync(executablePath, finalPath);
+			console.log(`✅ Executable copied successfully`);
 			
 			// Make executable on Unix systems and handle macOS security
 			if (process.platform !== 'win32') {
 				fs.chmodSync(finalPath, '755');
+				console.log('✅ Set executable permissions (755)');
 				
 				// On macOS, remove quarantine attributes to allow execution
 				if (process.platform === 'darwin') {
@@ -1499,13 +1587,32 @@ export default class SyncthingLauncher extends Plugin {
 								if (error && !error.message.includes('No such xattr')) {
 									console.log('Note: Could not remove quarantine attribute:', error.message);
 								} else {
-									console.log('Removed macOS quarantine attribute from executable');
+									console.log('✅ Removed macOS quarantine attribute from executable');
 								}
 								resolve();
 							});
 						});
 					} catch (error) {
 						console.log('Note: Could not remove quarantine attribute (non-fatal):', error);
+					}
+					
+					// Additional debugging for macOS
+					try {
+						const fileTypeOutput = await new Promise<string>((resolve) => {
+							exec(`file "${finalPath}"`, (error: any, stdout: any) => {
+								resolve(stdout || 'Could not determine file type');
+							});
+						});
+						console.log(`File type check: ${fileTypeOutput.trim()}`);
+						
+						const archOutput = await new Promise<string>((resolve) => {
+							exec(`lipo -info "${finalPath}" 2>/dev/null || otool -hv "${finalPath}" 2>/dev/null || echo "Not a Mach-O binary"`, (error: any, stdout: any) => {
+								resolve(stdout || 'Could not determine architecture');
+							});
+						});
+						console.log(`Architecture check: ${archOutput.trim()}`);
+					} catch (debugError) {
+						console.log('Debug checks failed (non-fatal):', debugError);
 					}
 				}
 			}
@@ -1520,10 +1627,31 @@ export default class SyncthingLauncher extends Plugin {
 				const stats = fs.statSync(finalPath);
 				const mode = stats.mode;
 				console.log(`Executable permissions: ${(mode & parseInt('777', 8)).toString(8)}`);
+				console.log(`File size: ${stats.size} bytes`);
 				
 				// Test if we can access the file for execution
 				fs.accessSync(finalPath, fs.constants.F_OK | fs.constants.X_OK);
 				console.log('✅ Executable permissions verified');
+				
+				// Try a quick execution test on macOS to see if it actually works
+				if (process.platform === 'darwin') {
+					try {
+						const testOutput = await new Promise<string>((resolve, reject) => {
+							exec(`"${finalPath}" --version`, { timeout: 5000 }, (error: any, stdout: any, stderr: any) => {
+								if (error) {
+									reject(error);
+								} else {
+									resolve(stdout.trim());
+								}
+							});
+						});
+						console.log('✅ Executable test run successful:', testOutput.split('\n')[0]);
+					} catch (testError) {
+						console.log('❌ Executable test run failed:', testError.message);
+						console.log('This indicates the binary may not be compatible or corrupted');
+						return false;
+					}
+				}
 			} catch (permError) {
 				console.error('❌ Executable permissions issue:', permError);
 				throw new Error(`Executable not accessible: ${permError.message}`);
@@ -1863,6 +1991,59 @@ class SettingTab extends PluginSettingTab {
 						new Notice('✅ Syncthing executable found and accessible');
 					} else {
 						new Notice('❌ Syncthing executable not found');
+					}
+				}));
+
+		new Setting(binarySection)
+			.setName('Force Re-download and Test')
+			.setDesc('Force re-download the Syncthing executable and run a comprehensive test (useful for troubleshooting)')
+			.addButton(button => button
+				.setButtonText('Re-download & Test')
+				.setTooltip('Force re-download and test Syncthing binary thoroughly')
+				.onClick(async () => {
+					try {
+						// First, stop any running Syncthing
+						await this.plugin.stopSyncthing();
+						await new Promise(resolve => setTimeout(resolve, 1000));
+						
+						// Remove existing executable completely
+						const executablePath = this.plugin.getSyncthingExecutablePath();
+						if (typeof require !== 'undefined') {
+							const fs = require('fs');
+							const path = require('path');
+							
+							try {
+								const syncthingDir = path.dirname(executablePath);
+								if (fs.existsSync(syncthingDir)) {
+									fs.rmSync(syncthingDir, { recursive: true, force: true });
+									console.log('Removed existing Syncthing directory for clean re-download');
+								}
+							} catch (removeError) {
+								console.log('Could not remove existing executable (non-fatal):', removeError);
+							}
+						}
+						
+						new Notice('Starting comprehensive re-download and test...', 5000);
+						
+						// Download with enhanced logging
+						const success = await this.plugin.downloadSyncthingExecutable();
+						if (success) {
+							new Notice('✅ Download successful! Running tests...', 3000);
+							
+							// Comprehensive verification
+							setTimeout(async () => {
+								const isExecutable = await this.plugin.checkExecutableExists();
+								if (isExecutable) {
+									new Notice('✅ All tests passed! Syncthing is ready to use.', 5000);
+								} else {
+									new Notice('❌ Tests failed. Check console for detailed logs.', 8000);
+								}
+							}, 1000);
+						} else {
+							new Notice('❌ Re-download failed. Check console for details.', 8000);
+						}
+					} catch (error) {
+						new Notice(`Test failed: ${error.message}`, 8000);
 					}
 				}));
 
