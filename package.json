@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-syncthing-launcher",
-	"version": "1.3.0",
+	"version": "1.4.0",
 	"description": "Cross-platform Syncthing integration: runs locally on desktop or connects to remote instances on mobile",
 	"main": "main.js",
 	"scripts": {
