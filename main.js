@@ -2633,6 +2633,7 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     }
   }
   async isSyncthingRunning() {
+    var _a;
     try {
       const url = this.getSyncthingURL();
       if (this.isMobile || this.settings.mobileMode) {
@@ -2648,16 +2649,41 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         const response = await axios_default.get(url);
         return response.status === 200;
       } catch (noAuthError) {
+        console.log("DEBUG: Full error object:", noAuthError);
+        console.log("DEBUG: Error message:", noAuthError.message);
+        console.log("DEBUG: Error code:", noAuthError.code);
+        console.log("DEBUG: Error response:", noAuthError.response);
+        console.log("DEBUG: Error status:", (_a = noAuthError.response) == null ? void 0 : _a.status);
+        console.log("DEBUG: Error toString:", noAuthError.toString());
         if (noAuthError.response && noAuthError.response.status === 200) {
+          console.log("SUCCESS: Detected via error.response.status === 200");
           return true;
         }
-        if (noAuthError.message && noAuthError.message.includes("200")) {
-          console.log("Detected successful response in error message:", noAuthError.message);
+        if (noAuthError.message && noAuthError.message.includes("net::ERR_FAILED 200 (OK)")) {
+          console.log("SUCCESS: Detected exact ERR_FAILED 200 (OK) pattern");
           return true;
         }
-        if (noAuthError.code === "ERR_FAILED" && noAuthError.message && (noAuthError.message.includes("200") || noAuthError.message.includes("OK"))) {
-          console.log("Detected ERR_FAILED with 200 OK:", noAuthError.message);
+        if (noAuthError.message && (noAuthError.message.includes("200") || noAuthError.message.includes("OK"))) {
+          console.log("SUCCESS: Detected 200/OK in error message:", noAuthError.message);
           return true;
+        }
+        if (noAuthError.code === "ERR_FAILED") {
+          console.log("DEBUG: ERR_FAILED detected, checking message for success indicators");
+          if (noAuthError.message && (noAuthError.message.includes("200") || noAuthError.message.includes("OK"))) {
+            console.log("SUCCESS: ERR_FAILED with success indicators");
+            return true;
+          }
+        }
+        if (noAuthError.request && noAuthError.request.status === 200) {
+          console.log("SUCCESS: Detected via error.request.status === 200");
+          return true;
+        }
+        if (noAuthError.isAxiosError) {
+          console.log("DEBUG: This is an axios error");
+          if (noAuthError.response && noAuthError.response.status >= 200 && noAuthError.response.status < 300) {
+            console.log("SUCCESS: Axios error with 2xx status code");
+            return true;
+          }
         }
         if (this.settings.syncthingApiKey) {
           try {
@@ -2669,15 +2695,21 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
             const response = await axios_default.get(url, config);
             return response.status === 200;
           } catch (authError) {
+            console.log("DEBUG: Auth error object:", authError);
             if (authError.response && authError.response.status === 200) {
+              console.log("SUCCESS: Auth request detected via error.response.status === 200");
               return true;
             }
-            if (authError.message && authError.message.includes("200")) {
-              console.log("Detected successful auth response in error message:", authError.message);
+            if (authError.message && authError.message.includes("net::ERR_FAILED 200 (OK)")) {
+              console.log("SUCCESS: Auth request detected exact ERR_FAILED 200 (OK) pattern");
+              return true;
+            }
+            if (authError.message && (authError.message.includes("200") || authError.message.includes("OK"))) {
+              console.log("SUCCESS: Auth request detected 200/OK in error message:", authError.message);
               return true;
             }
             if (authError.code === "ERR_FAILED" && authError.message && (authError.message.includes("200") || authError.message.includes("OK"))) {
-              console.log("Detected auth ERR_FAILED with 200 OK:", authError.message);
+              console.log("SUCCESS: Auth ERR_FAILED with success indicators");
               return true;
             }
             throw authError;
@@ -2686,16 +2718,35 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         throw noAuthError;
       }
     } catch (error) {
+      console.log("DEBUG: Final catch error object:", error);
       if (error.response && error.response.status === 200) {
+        console.log("SUCCESS: Final check detected via error.response.status === 200");
         return true;
       }
-      if (error.message && error.message.includes("200")) {
-        console.log("Final check - detected successful response in error message:", error.message);
+      if (error.message && error.message.includes("net::ERR_FAILED 200 (OK)")) {
+        console.log("SUCCESS: Final check detected exact ERR_FAILED 200 (OK) pattern");
+        return true;
+      }
+      if (error.message && (error.message.includes("200") || error.message.includes("OK"))) {
+        console.log("SUCCESS: Final check detected 200/OK in error message:", error.message);
         return true;
       }
       if (error.code === "ERR_FAILED" && error.message && (error.message.includes("200") || error.message.includes("OK"))) {
-        console.log("Final check - detected ERR_FAILED with 200 OK:", error.message);
+        console.log("SUCCESS: Final check detected ERR_FAILED with success indicators");
         return true;
+      }
+      try {
+        const errorProps = Object.getOwnPropertyNames(error);
+        console.log("DEBUG: Error object properties:", errorProps);
+        for (const prop of errorProps) {
+          const value = error[prop];
+          if (typeof value === "string" && (value.includes("200") || value.includes("OK"))) {
+            console.log(`SUCCESS: Found success indicator in property ${prop}: ${value}`);
+            return true;
+          }
+        }
+      } catch (e) {
+        console.log("DEBUG: Could not examine error properties");
       }
       console.log("Syncthing status: Not running");
       return false;
