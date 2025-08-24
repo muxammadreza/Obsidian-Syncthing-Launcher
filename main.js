@@ -2408,6 +2408,12 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         } else {
           console.log(`No remoteUrl set, using default port 8384`);
         }
+        await this.ensureConfigForPort(configDir, port);
+        if (this.syncthingInstance) {
+          console.log("Stopping existing Syncthing instance before starting with new configuration...");
+          await this.stopSyncthing();
+          await new Promise((resolve) => setTimeout(resolve, 1e3));
+        }
         const args = [
           "--home",
           configDir,
@@ -2569,6 +2575,46 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
     });
     writeFileSync(filePath, content, "utf8");
   }
+  async ensureConfigForPort(configDir, port) {
+    if (typeof require !== "undefined") {
+      const fs = require("fs");
+      const path = require("path");
+      const portFile = path.join(configDir, ".syncthing-port");
+      let storedPort = "";
+      if (fs.existsSync(portFile)) {
+        try {
+          storedPort = fs.readFileSync(portFile, "utf8").trim();
+        } catch (error) {
+          console.log("Could not read stored port file:", error);
+        }
+      }
+      if (storedPort && storedPort !== port) {
+        console.log(`Port changed from ${storedPort} to ${port}, clearing Syncthing config...`);
+        try {
+          const files = fs.readdirSync(configDir);
+          for (const file of files) {
+            const filePath = path.join(configDir, file);
+            const stat = fs.statSync(filePath);
+            if (stat.isFile()) {
+              fs.unlinkSync(filePath);
+              console.log(`Removed config file: ${file}`);
+            } else if (stat.isDirectory() && file !== "." && file !== "..") {
+              fs.rmSync(filePath, { recursive: true, force: true });
+              console.log(`Removed config directory: ${file}`);
+            }
+          }
+        } catch (error) {
+          console.log("Error clearing config directory:", error);
+        }
+      }
+      try {
+        fs.writeFileSync(portFile, port, "utf8");
+        console.log(`Stored current port: ${port}`);
+      } catch (error) {
+        console.log("Could not store port file:", error);
+      }
+    }
+  }
   getSyncthingURL() {
     if (this.isMobile || this.settings.mobileMode) {
       console.log(`Using mobile/remote URL: ${this.settings.remoteUrl}`);
@@ -2605,6 +2651,14 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         if (noAuthError.response && noAuthError.response.status === 200) {
           return true;
         }
+        if (noAuthError.message && noAuthError.message.includes("200")) {
+          console.log("Detected successful response in error message:", noAuthError.message);
+          return true;
+        }
+        if (noAuthError.code === "ERR_FAILED" && noAuthError.message && (noAuthError.message.includes("200") || noAuthError.message.includes("OK"))) {
+          console.log("Detected ERR_FAILED with 200 OK:", noAuthError.message);
+          return true;
+        }
         if (this.settings.syncthingApiKey) {
           try {
             const config = {
@@ -2618,6 +2672,14 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
             if (authError.response && authError.response.status === 200) {
               return true;
             }
+            if (authError.message && authError.message.includes("200")) {
+              console.log("Detected successful auth response in error message:", authError.message);
+              return true;
+            }
+            if (authError.code === "ERR_FAILED" && authError.message && (authError.message.includes("200") || authError.message.includes("OK"))) {
+              console.log("Detected auth ERR_FAILED with 200 OK:", authError.message);
+              return true;
+            }
             throw authError;
           }
         }
@@ -2625,6 +2687,14 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
       }
     } catch (error) {
       if (error.response && error.response.status === 200) {
+        return true;
+      }
+      if (error.message && error.message.includes("200")) {
+        console.log("Final check - detected successful response in error message:", error.message);
+        return true;
+      }
+      if (error.code === "ERR_FAILED" && error.message && (error.message.includes("200") || error.message.includes("OK"))) {
+        console.log("Final check - detected ERR_FAILED with 200 OK:", error.message);
         return true;
       }
       console.log("Syncthing status: Not running");

@@ -188,6 +188,17 @@ export default class SyncthingLauncher extends Plugin {
 					console.log(`No remoteUrl set, using default port 8384`);
 				}
 				
+				// Check if port has changed and clear config if needed
+				await this.ensureConfigForPort(configDir, port);
+				
+				// Stop any existing Syncthing instance before starting with new config
+				if (this.syncthingInstance) {
+					console.log('Stopping existing Syncthing instance before starting with new configuration...');
+					await this.stopSyncthing();
+					// Wait a moment for clean shutdown
+					await new Promise(resolve => setTimeout(resolve, 1000));
+				}
+				
 				// Start Syncthing with configuration directory
 				const args = [
 					'--home', configDir,
@@ -394,9 +405,58 @@ export default class SyncthingLauncher extends Plugin {
 		});
 	  
 		writeFileSync(filePath, content, 'utf8');
-	  }
+	}
 
-	getSyncthingURL(): string {
+	async ensureConfigForPort(configDir: string, port: string): Promise<void> {
+		if (typeof require !== 'undefined') {
+			const fs = require('fs');
+			const path = require('path');
+			
+			// Check if we have a stored port to compare against
+			const portFile = path.join(configDir, '.syncthing-port');
+			let storedPort = '';
+			
+			if (fs.existsSync(portFile)) {
+				try {
+					storedPort = fs.readFileSync(portFile, 'utf8').trim();
+				} catch (error) {
+					console.log('Could not read stored port file:', error);
+				}
+			}
+			
+			// If port has changed, clear the config directory
+			if (storedPort && storedPort !== port) {
+				console.log(`Port changed from ${storedPort} to ${port}, clearing Syncthing config...`);
+				
+				// Clear all config files except the directory itself
+				try {
+					const files = fs.readdirSync(configDir);
+					for (const file of files) {
+						const filePath = path.join(configDir, file);
+						const stat = fs.statSync(filePath);
+						if (stat.isFile()) {
+							fs.unlinkSync(filePath);
+							console.log(`Removed config file: ${file}`);
+						} else if (stat.isDirectory() && file !== '.' && file !== '..') {
+							// Remove subdirectories recursively
+							fs.rmSync(filePath, { recursive: true, force: true });
+							console.log(`Removed config directory: ${file}`);
+						}
+					}
+				} catch (error) {
+					console.log('Error clearing config directory:', error);
+				}
+			}
+			
+			// Store the current port
+			try {
+				fs.writeFileSync(portFile, port, 'utf8');
+				console.log(`Stored current port: ${port}`);
+			} catch (error) {
+				console.log('Could not store port file:', error);
+			}
+		}
+	}	getSyncthingURL(): string {
 		// Mobile mode - always use remote URL
 		if (this.isMobile || this.settings.mobileMode) {
 			console.log(`Using mobile/remote URL: ${this.settings.remoteUrl}`);
@@ -439,8 +499,23 @@ export default class SyncthingLauncher extends Plugin {
 				const response = await axios.get(url);
 				return response.status === 200;
 			} catch (noAuthError: any) {
-				// Check if it's actually a successful response but treated as error
+				// Enhanced error checking for various success response patterns
+				
+				// Check standard response object
 				if (noAuthError.response && noAuthError.response.status === 200) {
+					return true;
+				}
+				
+				// Check for ERR_FAILED with 200 OK in message 
+				if (noAuthError.message && noAuthError.message.includes('200')) {
+					console.log("Detected successful response in error message:", noAuthError.message);
+					return true;
+				}
+				
+				// Check error code patterns for successful responses wrapped as errors
+				if (noAuthError.code === 'ERR_FAILED' && noAuthError.message && 
+					(noAuthError.message.includes('200') || noAuthError.message.includes('OK'))) {
+					console.log("Detected ERR_FAILED with 200 OK:", noAuthError.message);
 					return true;
 				}
 				
@@ -455,20 +530,46 @@ export default class SyncthingLauncher extends Plugin {
 						const response = await axios.get(url, config);
 						return response.status === 200;
 					} catch (authError: any) {
-						// Check if it's actually a successful response but treated as error
+						// Enhanced error checking for auth requests too
 						if (authError.response && authError.response.status === 200) {
 							return true;
 						}
+						
+						if (authError.message && authError.message.includes('200')) {
+							console.log("Detected successful auth response in error message:", authError.message);
+							return true;
+						}
+						
+						if (authError.code === 'ERR_FAILED' && authError.message && 
+							(authError.message.includes('200') || authError.message.includes('OK'))) {
+							console.log("Detected auth ERR_FAILED with 200 OK:", authError.message);
+							return true;
+						}
+						
 						throw authError;
 					}
 				}
 				throw noAuthError;
 			}
 		} catch (error: any) {
-			// One more check for hidden success responses
+			// Enhanced final error checking
 			if (error.response && error.response.status === 200) {
 				return true;
 			}
+			
+			// Check error message for success indicators
+			if (error.message && error.message.includes('200')) {
+				console.log("Final check - detected successful response in error message:", error.message);
+				return true;
+			}
+			
+			// Check for ERR_FAILED with success indicators
+			if (error.code === 'ERR_FAILED' && error.message && 
+				(error.message.includes('200') || error.message.includes('OK'))) {
+				console.log("Final check - detected ERR_FAILED with 200 OK:", error.message);
+				return true;
+			}
+			
 			console.log("Syncthing status: Not running");
 			return false;
 		}
