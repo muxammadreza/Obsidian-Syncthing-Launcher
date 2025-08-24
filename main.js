@@ -137,7 +137,6 @@ __export(main_exports, {
 });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
-var import_events = require("events");
 function detectMobilePlatform() {
   var _a;
   if ((_a = window.app) == null ? void 0 : _a.isMobile) {
@@ -166,6 +165,42 @@ var childProcess;
 var treeKill;
 var https;
 var urlModule;
+var EventEmitter;
+var platformInfo = {
+  platform: "unknown",
+  arch: "unknown",
+  isDesktop: false
+};
+var SimpleEventEmitter = class {
+  constructor() {
+    this.events = {};
+  }
+  on(event, listener) {
+    if (!this.events[event]) {
+      this.events[event] = [];
+    }
+    this.events[event].push(listener);
+  }
+  off(event, listener) {
+    if (!this.events[event])
+      return;
+    const index = this.events[event].indexOf(listener);
+    if (index > -1) {
+      this.events[event].splice(index, 1);
+    }
+  }
+  emit(event, ...args) {
+    if (!this.events[event])
+      return;
+    this.events[event].forEach((listener) => {
+      try {
+        listener(...args);
+      } catch (error) {
+        console.error("Event listener error:", error);
+      }
+    });
+  }
+};
 try {
   if (!detectMobilePlatform()) {
     childProcess = require("child_process");
@@ -175,15 +210,40 @@ try {
     https = require("https");
     urlModule = require("url");
     treeKill = require_tree_kill();
+    EventEmitter = require("events").EventEmitter;
     spawn = childProcess.spawn;
     exec = childProcess.exec;
     readFileSync = fs.readFileSync;
     writeFileSync = fs.writeFileSync;
+    platformInfo.platform = typeof process !== "undefined" && process.platform || "unknown";
+    platformInfo.arch = typeof process !== "undefined" && process.arch || "unknown";
+    platformInfo.isDesktop = true;
   } else {
     console.log("Mobile platform detected - Node.js functionality disabled");
+    EventEmitter = SimpleEventEmitter;
+    const userAgent = navigator.userAgent.toLowerCase();
+    if (/ipad|iphone|ipod/.test(userAgent)) {
+      platformInfo.platform = "ios";
+      platformInfo.arch = "arm64";
+    } else if (/android/.test(userAgent)) {
+      platformInfo.platform = "android";
+      platformInfo.arch = "arm64";
+    } else {
+      platformInfo.platform = "mobile";
+      platformInfo.arch = "unknown";
+    }
+    platformInfo.isDesktop = false;
     http = {
       request: () => {
-        throw new Error("HTTP requests not available on mobile platform");
+        console.warn("HTTP requests not available on mobile platform");
+        return {
+          on: () => {
+          },
+          end: () => {
+          },
+          write: () => {
+          }
+        };
       }
     };
     fs = {
@@ -200,15 +260,22 @@ try {
     };
     childProcess = {
       spawn: () => {
-        throw new Error("Process spawning not available on mobile");
+        console.warn("Process spawning not available on mobile");
+        return { pid: -1, on: () => {
+        }, kill: () => {
+        } };
       },
       exec: () => {
-        throw new Error("Process execution not available on mobile");
+        console.warn("Process execution not available on mobile");
       }
     };
   }
 } catch (error) {
-  console.log("Desktop-only modules not available (mobile platform detected)");
+  console.log("Desktop-only modules not available:", error);
+  EventEmitter = SimpleEventEmitter;
+  platformInfo.platform = "unknown";
+  platformInfo.arch = "unknown";
+  platformInfo.isDesktop = false;
 }
 var DEFAULT_SETTINGS = {
   syncthingApiKey: "",
@@ -219,7 +286,7 @@ var DEFAULT_SETTINGS = {
   remoteUrl: "http://127.0.0.1:8384",
   mobileMode: false
 };
-var SyncthingMonitor = class extends import_events.EventEmitter {
+var SyncthingMonitor = class extends EventEmitter {
   constructor() {
     super(...arguments);
     this.token = null;
@@ -743,7 +810,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
     }
     if (exec) {
       let killCommand;
-      if (process.platform === "win32") {
+      if (platformInfo.platform === "win32") {
         killCommand = "taskkill /F /IM syncthing.exe /T";
       } else {
         killCommand = "pkill -f syncthing";
@@ -1030,7 +1097,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
             return true;
           } catch (permError) {
             console.log("\u274C Executable exists but is not executable:", executablePath, permError.message);
-            if (process.platform !== "win32") {
+            if (platformInfo.platform !== "win32") {
               try {
                 fs2.chmodSync(executablePath, "755");
                 console.log("Fixed executable permissions");
@@ -1067,26 +1134,26 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       }
       let platformPattern;
       let expectedExecutableName;
-      console.log(`Detected platform: ${process.platform}, architecture: ${process.arch}`);
-      if (process.platform === "win32") {
-        const arch = process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : "386";
+      console.log(`Detected platform: ${platformInfo.platform}, architecture: ${platformInfo.arch}`);
+      if (platformInfo.platform === "win32") {
+        const arch = platformInfo.arch === "x64" ? "amd64" : platformInfo.arch === "arm64" ? "arm64" : "386";
         platformPattern = `syncthing-windows-${arch}-v${releaseInfo.version}`;
         expectedExecutableName = "syncthing.exe";
-      } else if (process.platform === "darwin") {
+      } else if (platformInfo.platform === "darwin") {
         let arch;
-        if (process.arch === "arm64") {
+        if (platformInfo.arch === "arm64") {
           arch = "arm64";
-        } else if (process.arch === "x64") {
+        } else if (platformInfo.arch === "x64") {
           arch = "amd64";
         } else {
-          console.log(`Unknown macOS architecture ${process.arch}, trying universal build`);
+          console.log(`Unknown macOS architecture ${platformInfo.arch}, trying universal build`);
           arch = "universal";
         }
         platformPattern = `syncthing-macos-${arch}-v${releaseInfo.version}`;
         expectedExecutableName = "syncthing";
         console.log(`Selected macOS pattern: ${platformPattern}`);
       } else {
-        const arch = process.arch === "x64" ? "amd64" : process.arch === "arm64" ? "arm64" : process.arch === "arm" ? "arm" : "386";
+        const arch = platformInfo.arch === "x64" ? "amd64" : platformInfo.arch === "arm64" ? "arm64" : platformInfo.arch === "arm" ? "arm" : "386";
         platformPattern = `syncthing-linux-${arch}-v${releaseInfo.version}`;
         expectedExecutableName = "syncthing";
       }
@@ -1096,7 +1163,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         (asset2) => asset2.name.startsWith(platformPattern)
       );
       if (!asset) {
-        if (process.platform === "darwin") {
+        if (platformInfo.platform === "darwin") {
           console.log("Primary macOS asset not found, trying fallbacks...");
           const universalPattern = `syncthing-macos-universal-v${releaseInfo.version}`;
           const universalAsset = releaseInfo.assets.find(
@@ -1104,10 +1171,10 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
           );
           if (universalAsset) {
             console.log(`Found universal macOS build: ${universalAsset.name}`);
-            new import_obsidian.Notice(`Using universal macOS build for ${process.arch} architecture`, 5e3);
+            new import_obsidian.Notice(`Using universal macOS build for ${platformInfo.arch} architecture`, 5e3);
             return this.downloadAndInstallAsset(universalAsset, expectedExecutableName);
           }
-          if (process.arch === "x64") {
+          if (platformInfo.arch === "x64") {
             const amd64Pattern = `syncthing-macos-amd64-v${releaseInfo.version}`;
             const amd64Asset = releaseInfo.assets.find(
               (asset2) => asset2.name.startsWith(amd64Pattern)
@@ -1119,7 +1186,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
             }
           }
         }
-        new import_obsidian.Notice(`No Syncthing release found for ${process.platform} ${process.arch}. Available assets: ${releaseInfo.assets.map((a) => a.name).join(", ")}`, 1e4);
+        new import_obsidian.Notice(`No Syncthing release found for ${platformInfo.platform} ${platformInfo.arch}. Available assets: ${releaseInfo.assets.map((a) => a.name).join(", ")}`, 1e4);
         return false;
       }
       return this.downloadAndInstallAsset(asset, expectedExecutableName);
@@ -1135,7 +1202,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
   async downloadAndInstallAsset(asset, expectedExecutableName) {
     var _a, _b;
     try {
-      new import_obsidian.Notice(`Downloading Syncthing ${((_a = asset.name.match(/v(\d+\.\d+\.\d+)/)) == null ? void 0 : _a[1]) || "latest"} for ${process.platform} ${process.arch}... Please wait.`, 8e3);
+      new import_obsidian.Notice(`Downloading Syncthing ${((_a = asset.name.match(/v(\d+\.\d+\.\d+)/)) == null ? void 0 : _a[1]) || "latest"} for ${platformInfo.platform} ${platformInfo.arch}... Please wait.`, 8e3);
       console.log(`Downloading Syncthing from: ${asset.browser_download_url}`);
       const archiveData = await this.downloadFile(asset.browser_download_url);
       if (!archiveData) {
@@ -1296,7 +1363,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         var _a, _b;
         let extractCommand;
         let extractArgs;
-        if (process.platform === "win32") {
+        if (platformInfo.platform === "win32") {
           extractCommand = "powershell";
           extractArgs = ["-Command", `Expand-Archive -Path "${tempZipPath}" -DestinationPath "${targetDir}" -Force`];
         } else {
@@ -1454,7 +1521,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         console.error(`\u274C Selected file is too small to be a Syncthing binary (${execStats.size} bytes). This is likely a config file, not the executable.`);
         return false;
       }
-      if (process.platform === "darwin") {
+      if (platformInfo.platform === "darwin") {
         try {
           const fileTypeCheck = await new Promise((resolve) => {
             exec2(`file "${executablePath}"`, (error, stdout) => {
@@ -1471,9 +1538,9 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         }
       }
       let finalPath;
-      if (process.platform === "win32") {
+      if (platformInfo.platform === "win32") {
         finalPath = path2.join(extractDir, "syncthing.exe");
-      } else if (process.platform === "darwin") {
+      } else if (platformInfo.platform === "darwin") {
         finalPath = path2.join(extractDir, "syncthing-macos");
       } else {
         finalPath = path2.join(extractDir, "syncthing-linux");
@@ -1481,10 +1548,10 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       console.log(`Copying executable from ${executablePath} to ${finalPath}`);
       fs2.copyFileSync(executablePath, finalPath);
       console.log(`\u2705 Executable copied successfully`);
-      if (process.platform !== "win32") {
+      if (platformInfo.platform !== "win32") {
         fs2.chmodSync(finalPath, "755");
         console.log("\u2705 Set executable permissions (755)");
-        if (process.platform === "darwin") {
+        if (platformInfo.platform === "darwin") {
           try {
             await new Promise((resolve, reject) => {
               exec2(`xattr -d com.apple.quarantine "${finalPath}"`, (error) => {
@@ -1526,7 +1593,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         console.log(`File size: ${stats.size} bytes`);
         fs2.accessSync(finalPath, fs2.constants.F_OK | fs2.constants.X_OK);
         console.log("\u2705 Executable permissions verified");
-        if (process.platform === "darwin") {
+        if (platformInfo.platform === "darwin") {
           try {
             const testOutput = await new Promise((resolve, reject) => {
               exec2(`"${finalPath}" --version`, { timeout: 5e3 }, (error, stdout, stderr) => {
@@ -1592,9 +1659,9 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
   }
   getSyncthingExecutablePath() {
     const pluginPath = this.getPluginAbsolutePath();
-    if (process.platform === "win32") {
+    if (platformInfo.platform === "win32") {
       return `${pluginPath}syncthing/syncthing.exe`;
-    } else if (process.platform === "darwin") {
+    } else if (platformInfo.platform === "darwin") {
       return `${pluginPath}syncthing/syncthing-macos`;
     } else {
       return `${pluginPath}syncthing/syncthing-linux`;
@@ -2086,7 +2153,7 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
     diagnostics.createDiv({ cls: "syncthing-diagnostic-title", text: "System Information" });
     const platformItem = diagnostics.createDiv("syncthing-diagnostic-item");
     platformItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Platform:" });
-    platformItem.createSpan({ cls: "syncthing-diagnostic-value", text: `${process.platform} ${process.arch}` });
+    platformItem.createSpan({ cls: "syncthing-diagnostic-value", text: `${platformInfo.platform} ${platformInfo.arch}` });
     const nodeItem = diagnostics.createDiv("syncthing-diagnostic-item");
     nodeItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Node.js:" });
     nodeItem.createSpan({ cls: "syncthing-diagnostic-value", text: process.version });
@@ -2102,8 +2169,8 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
       console.log("Syncthing Plugin Debug Info:", {
         settings: this.plugin.settings,
         executablePath: this.plugin.getSyncthingExecutablePath(),
-        platform: process.platform,
-        arch: process.arch
+        platform: platformInfo.platform,
+        arch: platformInfo.arch
       });
       new import_obsidian.Notice("Debug info logged to console (F12)");
     });
