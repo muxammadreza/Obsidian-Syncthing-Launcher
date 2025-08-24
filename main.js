@@ -1995,7 +1995,7 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
     nodeItem.createSpan({ cls: "syncthing-diagnostic-value", text: process.version });
     const pluginItem = diagnostics.createDiv("syncthing-diagnostic-item");
     pluginItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Plugin Version:" });
-    pluginItem.createSpan({ cls: "syncthing-diagnostic-value", text: "1.5.0" });
+    pluginItem.createSpan({ cls: "syncthing-diagnostic-value", text: "1.5.1" });
     const debugControls = diagnosticsSection.createDiv("syncthing-controls");
     const logsBtn = debugControls.createEl("button", {
       cls: "syncthing-btn secondary",
@@ -2033,7 +2033,7 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
     aboutEl.createEl("h2", { cls: "syncthing-about-title", text: "Syncthing Launcher" });
     aboutEl.createDiv({
       cls: "syncthing-about-version",
-      text: "Version 1.5.0"
+      text: "Version 1.5.1"
     });
     aboutEl.createDiv({
       cls: "syncthing-about-description",

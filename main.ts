@@ -2346,7 +2346,7 @@ class SettingTab extends PluginSettingTab {
 
 		const pluginItem = diagnostics.createDiv('syncthing-diagnostic-item');
 		pluginItem.createSpan({ cls: 'syncthing-diagnostic-label', text: 'Plugin Version:' });
-		pluginItem.createSpan({ cls: 'syncthing-diagnostic-value', text: '1.5.0' });
+		pluginItem.createSpan({ cls: 'syncthing-diagnostic-value', text: '1.5.1' });
 
 		// Debug Actions
 		const debugControls = diagnosticsSection.createDiv('syncthing-controls');
@@ -2390,7 +2390,7 @@ class SettingTab extends PluginSettingTab {
 		aboutEl.createEl('h2', { cls: 'syncthing-about-title', text: 'Syncthing Launcher' });
 		aboutEl.createDiv({ 
 			cls: 'syncthing-about-version', 
-			text: 'Version 1.5.0' 
+			text: 'Version 1.5.1' 
 		});
 		
 		aboutEl.createDiv({
