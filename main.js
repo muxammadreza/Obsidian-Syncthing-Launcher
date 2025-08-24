@@ -2649,11 +2649,14 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
         return response.status === 200;
       } catch (noAuthError) {
         if (noAuthError.isAxiosError || noAuthError.name === "AxiosError") {
-          if (noAuthError.code === "ERR_NETWORK" && noAuthError.message === "Network Error" && !noAuthError.response) {
-            return true;
+          if (noAuthError.code === "ERR_CONNECTION_REFUSED") {
+            return false;
           }
           if (noAuthError.response && noAuthError.response.status === 200) {
             return true;
+          }
+          if (noAuthError.code === "ERR_NETWORK" && noAuthError.message === "Network Error" && !noAuthError.response) {
+            return false;
           }
         }
         if (this.settings.syncthingApiKey) {
@@ -2667,11 +2670,14 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
             return response.status === 200;
           } catch (authError) {
             if (authError.isAxiosError || authError.name === "AxiosError") {
-              if (authError.code === "ERR_NETWORK" && authError.message === "Network Error" && !authError.response) {
-                return true;
+              if (authError.code === "ERR_CONNECTION_REFUSED") {
+                throw authError;
               }
               if (authError.response && authError.response.status === 200) {
                 return true;
+              }
+              if (authError.code === "ERR_NETWORK" && authError.message === "Network Error" && !authError.response) {
+                throw authError;
               }
             }
             throw authError;
@@ -2681,11 +2687,14 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
       }
     } catch (error) {
       if (error.isAxiosError || error.name === "AxiosError") {
-        if (error.code === "ERR_NETWORK" && error.message === "Network Error" && !error.response) {
-          return true;
+        if (error.code === "ERR_CONNECTION_REFUSED") {
+          return false;
         }
         if (error.response && error.response.status === 200) {
           return true;
+        }
+        if (error.code === "ERR_NETWORK" && error.message === "Network Error" && !error.response) {
+          return false;
         }
       }
       return false;
@@ -2823,7 +2832,9 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
   }
   async getLastSyncDate() {
     try {
-      const response = await axios_default.get(this.getSyncthingURL() + `rest/db/status?folder=${this.settings.vaultFolderID}`, {
+      const baseUrl = this.getSyncthingURL();
+      const url = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+      const response = await axios_default.get(url + `rest/db/status?folder=${this.settings.vaultFolderID}`, {
         headers: {
           "X-API-Key": this.settings.syncthingApiKey
         }

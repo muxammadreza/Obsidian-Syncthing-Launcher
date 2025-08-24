@@ -501,23 +501,33 @@ export default class SyncthingLauncher extends Plugin {
 			} catch (noAuthError: any) {
 				// Check if this is an axios error
 				if (noAuthError.isAxiosError || noAuthError.name === 'AxiosError') {
+					
+					// ERR_CONNECTION_REFUSED means Syncthing is definitely NOT running
+					if (noAuthError.code === 'ERR_CONNECTION_REFUSED') {
+						return false;
+					}
+					
 					// The key insight: ERR_FAILED 200 (OK) gets converted to ERR_NETWORK by Axios
+					// But we need to be very specific - only certain ERR_NETWORK cases are success
 					// When Syncthing is running but CORS blocks the response:
 					// - error.code: 'ERR_NETWORK' 
 					// - error.message: 'Network Error'
 					// - error.response: undefined
-					// But browser console shows: net::ERR_FAILED 200 (OK)
+					// - BUT the browser console shows: net::ERR_FAILED 200 (OK)
 					
-					if (noAuthError.code === 'ERR_NETWORK' && 
-						noAuthError.message === 'Network Error' && 
-						!noAuthError.response) {
-						// This is the CORS-wrapped success response!
+					// Check for response status success first
+					if (noAuthError.response && noAuthError.response.status === 200) {
 						return true;
 					}
 					
-					// Also check for other success indicators
-					if (noAuthError.response && noAuthError.response.status === 200) {
-						return true;
+					// For ERR_NETWORK, we need additional validation that this is actually a successful response
+					// Only treat ERR_NETWORK as success if we have other indicators
+					if (noAuthError.code === 'ERR_NETWORK' && 
+						noAuthError.message === 'Network Error' && 
+						!noAuthError.response) {
+						// This could be either a real network error OR a CORS-wrapped success
+						// For now, return false to be conservative - we need better detection
+						return false;
 					}
 				}
 				
@@ -532,16 +542,25 @@ export default class SyncthingLauncher extends Plugin {
 						const response = await axios.get(url, config);
 						return response.status === 200;
 					} catch (authError: any) {
-						// Same ERR_NETWORK detection for API key requests
+						// Same careful error detection for API key requests
 						if (authError.isAxiosError || authError.name === 'AxiosError') {
-							if (authError.code === 'ERR_NETWORK' && 
-								authError.message === 'Network Error' && 
-								!authError.response) {
+							
+							// ERR_CONNECTION_REFUSED means definitely NOT running
+							if (authError.code === 'ERR_CONNECTION_REFUSED') {
+								throw authError;
+							}
+							
+							// Check for response status success
+							if (authError.response && authError.response.status === 200) {
 								return true;
 							}
 							
-							if (authError.response && authError.response.status === 200) {
-								return true;
+							// For ERR_NETWORK, be conservative for now
+							if (authError.code === 'ERR_NETWORK' && 
+								authError.message === 'Network Error' && 
+								!authError.response) {
+								// Conservative: return false, need better detection
+								throw authError;
 							}
 						}
 						
@@ -551,16 +570,25 @@ export default class SyncthingLauncher extends Plugin {
 				throw noAuthError;
 			}
 		} catch (error: any) {
-			// Final fallback error checking
+			// Final fallback error checking - be conservative
 			if (error.isAxiosError || error.name === 'AxiosError') {
-				if (error.code === 'ERR_NETWORK' && 
-					error.message === 'Network Error' && 
-					!error.response) {
+				
+				// ERR_CONNECTION_REFUSED means definitely NOT running
+				if (error.code === 'ERR_CONNECTION_REFUSED') {
+					return false;
+				}
+				
+				// Check for response status success
+				if (error.response && error.response.status === 200) {
 					return true;
 				}
 				
-				if (error.response && error.response.status === 200) {
-					return true;
+				// For ERR_NETWORK, be conservative for now
+				if (error.code === 'ERR_NETWORK' && 
+					error.message === 'Network Error' && 
+					!error.response) {
+					// Conservative: return false, need better detection
+					return false;
 				}
 			}
 			
@@ -757,7 +785,10 @@ export default class SyncthingLauncher extends Plugin {
 
 	async getLastSyncDate() {
 		try {
-		  const response = await axios.get(this.getSyncthingURL() + `rest/db/status?folder=${this.settings.vaultFolderID}`, {
+		  const baseUrl = this.getSyncthingURL();
+		  // Ensure proper URL construction with trailing slash
+		  const url = baseUrl.endsWith('/') ? baseUrl : baseUrl + '/';
+		  const response = await axios.get(url + `rest/db/status?folder=${this.settings.vaultFolderID}`, {
 			headers: {
 			  'X-API-Key': this.settings.syncthingApiKey,
 			}
