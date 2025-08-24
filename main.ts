@@ -174,12 +174,29 @@ export default class SyncthingLauncher extends Plugin {
 					}
 				}
 				
-				// Start Syncthing with configuration directory (using default port 8384)
+				// Extract port from remoteUrl if it's localhost, otherwise use default
+				let port = '8384';
+				if (this.settings.remoteUrl) {
+					const urlMatch = this.settings.remoteUrl.match(/^https?:\/\/(127\.0\.0\.1|localhost):(\d+)/);
+					if (urlMatch) {
+						port = urlMatch[2];
+						console.log(`Using custom port ${port} from remoteUrl: ${this.settings.remoteUrl}`);
+					} else {
+						console.log(`RemoteUrl set but not localhost, using default port 8384: ${this.settings.remoteUrl}`);
+					}
+				} else {
+					console.log(`No remoteUrl set, using default port 8384`);
+				}
+				
+				// Start Syncthing with configuration directory
 				const args = [
 					'--home', configDir,
 					'--no-browser',
-					'--gui-address', '127.0.0.1:8384'
+					'--gui-address', `127.0.0.1:${port}`
 				];
+				
+				console.log(`Starting Syncthing with args: ${args.join(' ')}`);
+				
 				
 				this.syncthingInstance = spawn(executablePath, args);
 
@@ -380,17 +397,25 @@ export default class SyncthingLauncher extends Plugin {
 	  }
 
 	getSyncthingURL(): string {
-		// Mobile mode or explicit remote URL setting
+		// Mobile mode - always use remote URL
 		if (this.isMobile || this.settings.mobileMode) {
+			console.log(`Using mobile/remote URL: ${this.settings.remoteUrl}`);
 			return this.settings.remoteUrl;
 		}
 		
-		// Desktop mode - Docker or local
+		// Desktop mode
 		if (this.settings.useDocker) {
+			console.log(`Using Docker URL: ${SYNCTHING_CORS_PROXY_CONTAINER_URL}`);
 			return SYNCTHING_CORS_PROXY_CONTAINER_URL;
 		} else {
-			// Use remoteUrl setting if configured, otherwise default localhost
-			return this.settings.remoteUrl;
+			// For desktop mode without Docker:
+			// Use remoteUrl if set, otherwise default localhost:8384
+			if (this.settings.remoteUrl) {
+				console.log(`Using configured remoteUrl: ${this.settings.remoteUrl}`);
+				return this.settings.remoteUrl;
+			}
+			console.log(`Using default localhost URL: http://127.0.0.1:8384`);
+			return 'http://127.0.0.1:8384';
 		}
 	}
 

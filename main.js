@@ -2396,13 +2396,26 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
             fs.mkdirSync(configDir, { recursive: true });
           }
         }
+        let port = "8384";
+        if (this.settings.remoteUrl) {
+          const urlMatch = this.settings.remoteUrl.match(/^https?:\/\/(127\.0\.0\.1|localhost):(\d+)/);
+          if (urlMatch) {
+            port = urlMatch[2];
+            console.log(`Using custom port ${port} from remoteUrl: ${this.settings.remoteUrl}`);
+          } else {
+            console.log(`RemoteUrl set but not localhost, using default port 8384: ${this.settings.remoteUrl}`);
+          }
+        } else {
+          console.log(`No remoteUrl set, using default port 8384`);
+        }
         const args = [
           "--home",
           configDir,
           "--no-browser",
           "--gui-address",
-          "127.0.0.1:8384"
+          `127.0.0.1:${port}`
         ];
+        console.log(`Starting Syncthing with args: ${args.join(" ")}`);
         this.syncthingInstance = spawn(executablePath, args);
         this.syncthingInstance.stdout.on("data", (data) => {
           console.log(`stdout: ${data}`);
@@ -2558,12 +2571,19 @@ var SyncthingLauncher = class extends import_obsidian.Plugin {
   }
   getSyncthingURL() {
     if (this.isMobile || this.settings.mobileMode) {
+      console.log(`Using mobile/remote URL: ${this.settings.remoteUrl}`);
       return this.settings.remoteUrl;
     }
     if (this.settings.useDocker) {
+      console.log(`Using Docker URL: ${SYNCTHING_CORS_PROXY_CONTAINER_URL}`);
       return SYNCTHING_CORS_PROXY_CONTAINER_URL;
     } else {
-      return this.settings.remoteUrl;
+      if (this.settings.remoteUrl) {
+        console.log(`Using configured remoteUrl: ${this.settings.remoteUrl}`);
+        return this.settings.remoteUrl;
+      }
+      console.log(`Using default localhost URL: http://127.0.0.1:8384`);
+      return "http://127.0.0.1:8384";
     }
   }
   async isSyncthingRunning() {
