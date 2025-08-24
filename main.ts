@@ -1,18 +1,72 @@
-import * as http from 'http';
 import { App, FileSystemAdapter, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import { EventEmitter } from 'events';
 
+// Platform detection for mobile
+function detectMobilePlatform(): boolean {
+	// Check if we're running in Obsidian mobile
+	if ((window as any).app?.isMobile) {
+		return true;
+	}
+	
+	// Check user agent for mobile platforms
+	const userAgent = navigator.userAgent || navigator.vendor || (window as any).opera;
+	
+	// iOS detection
+	if (/iPad|iPhone|iPod/.test(userAgent)) {
+		return true;
+	}
+	
+	// Android detection
+	if (/android/i.test(userAgent)) {
+		return true;
+	}
+	
+	// Additional mobile checks
+	if (/Mobile|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(userAgent)) {
+		return true;
+	}
+	
+	return false;
+}
+
 // Conditional imports for desktop-only functionality
-let spawn: any, exec: any, readFileSync: any, writeFileSync: any;
+let spawn: any, exec: any, readFileSync: any, writeFileSync: any, http: any;
+let fs: any, path: any, childProcess: any, treeKill: any, https: any, urlModule: any;
 
 try {
-	// These will only work on desktop platforms
-	const childProcess = require("child_process");
-	const fs = require('fs');
-	spawn = childProcess.spawn;
-	exec = childProcess.exec;
-	readFileSync = fs.readFileSync;
-	writeFileSync = fs.writeFileSync;
+	// Only load Node.js modules on desktop platforms
+	if (!detectMobilePlatform()) {
+		childProcess = require("child_process");
+		fs = require('fs');
+		path = require('path');
+		http = require('http');
+		https = require('https');
+		urlModule = require('url');
+		treeKill = require('tree-kill');
+		
+		spawn = childProcess.spawn;
+		exec = childProcess.exec;
+		readFileSync = fs.readFileSync;
+		writeFileSync = fs.writeFileSync;
+	} else {
+		// On mobile, provide no-op functions
+		console.log('Mobile platform detected - Node.js functionality disabled');
+		http = {
+			request: () => { throw new Error('HTTP requests not available on mobile platform'); }
+		};
+		fs = {
+			existsSync: () => false,
+			readFileSync: () => '',
+			writeFileSync: () => {},
+			accessSync: () => { throw new Error('File access not available on mobile'); },
+			constants: { F_OK: 0, X_OK: 1 },
+			chmodSync: () => {}
+		};
+		childProcess = {
+			spawn: () => { throw new Error('Process spawning not available on mobile'); },
+			exec: () => { throw new Error('Process execution not available on mobile'); }
+		};
+	}
 } catch (error) {
 	// Mobile platform - these modules are not available
 	console.log('Desktop-only modules not available (mobile platform detected)');
@@ -1775,18 +1829,7 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	detectMobilePlatform(): boolean {
-		// Check for mobile platforms using process.platform and user agent
-		const platform = process.platform;
-		const userAgent = navigator.userAgent.toLowerCase();
-		
-		// Check for iOS, Android, or mobile browsers
-		const isMobileUA = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent);
-		
-		// Check for touch support as additional indicator
-		const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-		
-		// Consider it mobile if user agent suggests mobile or if it's a touch device with small screen
-		return isMobileUA || (isTouchDevice && window.innerWidth < 1024);
+		return detectMobilePlatform();
 	}
 
 	getPluginAbsolutePath(): string {
