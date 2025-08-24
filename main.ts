@@ -499,55 +499,24 @@ export default class SyncthingLauncher extends Plugin {
 				const response = await axios.get(url);
 				return response.status === 200;
 			} catch (noAuthError: any) {
-				// COMPREHENSIVE ERROR DEBUGGING
-				console.log("DEBUG: Full error object:", noAuthError);
-				console.log("DEBUG: Error message:", noAuthError.message);
-				console.log("DEBUG: Error code:", noAuthError.code);
-				console.log("DEBUG: Error response:", noAuthError.response);
-				console.log("DEBUG: Error status:", noAuthError.response?.status);
-				console.log("DEBUG: Error toString:", noAuthError.toString());
-				
-				// Enhanced error checking for various success response patterns
-				
-				// Check standard response object
-				if (noAuthError.response && noAuthError.response.status === 200) {
-					console.log("SUCCESS: Detected via error.response.status === 200");
-					return true;
-				}
-				
-				// Check for ERR_FAILED with 200 OK in message - EXACT pattern from logs
-				if (noAuthError.message && noAuthError.message.includes('net::ERR_FAILED 200 (OK)')) {
-					console.log("SUCCESS: Detected exact ERR_FAILED 200 (OK) pattern");
-					return true;
-				}
-				
-				// Check for any mention of 200 in message
-				if (noAuthError.message && (noAuthError.message.includes('200') || noAuthError.message.includes('OK'))) {
-					console.log("SUCCESS: Detected 200/OK in error message:", noAuthError.message);
-					return true;
-				}
-				
-				// Check error code patterns for successful responses wrapped as errors
-				if (noAuthError.code === 'ERR_FAILED') {
-					console.log("DEBUG: ERR_FAILED detected, checking message for success indicators");
-					if (noAuthError.message && (noAuthError.message.includes('200') || noAuthError.message.includes('OK'))) {
-						console.log("SUCCESS: ERR_FAILED with success indicators");
+				// Check if this is an axios error
+				if (noAuthError.isAxiosError || noAuthError.name === 'AxiosError') {
+					// The key insight: ERR_FAILED 200 (OK) gets converted to ERR_NETWORK by Axios
+					// When Syncthing is running but CORS blocks the response:
+					// - error.code: 'ERR_NETWORK' 
+					// - error.message: 'Network Error'
+					// - error.response: undefined
+					// But browser console shows: net::ERR_FAILED 200 (OK)
+					
+					if (noAuthError.code === 'ERR_NETWORK' && 
+						noAuthError.message === 'Network Error' && 
+						!noAuthError.response) {
+						// This is the CORS-wrapped success response!
 						return true;
 					}
-				}
-				
-				// Check for hidden properties that might contain success status
-				if (noAuthError.request && noAuthError.request.status === 200) {
-					console.log("SUCCESS: Detected via error.request.status === 200");
-					return true;
-				}
-				
-				// Check axios specific error patterns
-				if (noAuthError.isAxiosError) {
-					console.log("DEBUG: This is an axios error");
-					// Sometimes axios wraps successful responses as errors
-					if (noAuthError.response && noAuthError.response.status >= 200 && noAuthError.response.status < 300) {
-						console.log("SUCCESS: Axios error with 2xx status code");
+					
+					// Also check for other success indicators
+					if (noAuthError.response && noAuthError.response.status === 200) {
 						return true;
 					}
 				}
@@ -563,28 +532,17 @@ export default class SyncthingLauncher extends Plugin {
 						const response = await axios.get(url, config);
 						return response.status === 200;
 					} catch (authError: any) {
-						console.log("DEBUG: Auth error object:", authError);
-						
-						// Same comprehensive checking for auth errors
-						if (authError.response && authError.response.status === 200) {
-							console.log("SUCCESS: Auth request detected via error.response.status === 200");
-							return true;
-						}
-						
-						if (authError.message && authError.message.includes('net::ERR_FAILED 200 (OK)')) {
-							console.log("SUCCESS: Auth request detected exact ERR_FAILED 200 (OK) pattern");
-							return true;
-						}
-						
-						if (authError.message && (authError.message.includes('200') || authError.message.includes('OK'))) {
-							console.log("SUCCESS: Auth request detected 200/OK in error message:", authError.message);
-							return true;
-						}
-						
-						if (authError.code === 'ERR_FAILED' && authError.message && 
-							(authError.message.includes('200') || authError.message.includes('OK'))) {
-							console.log("SUCCESS: Auth ERR_FAILED with success indicators");
-							return true;
+						// Same ERR_NETWORK detection for API key requests
+						if (authError.isAxiosError || authError.name === 'AxiosError') {
+							if (authError.code === 'ERR_NETWORK' && 
+								authError.message === 'Network Error' && 
+								!authError.response) {
+								return true;
+							}
+							
+							if (authError.response && authError.response.status === 200) {
+								return true;
+							}
 						}
 						
 						throw authError;
@@ -593,49 +551,19 @@ export default class SyncthingLauncher extends Plugin {
 				throw noAuthError;
 			}
 		} catch (error: any) {
-			console.log("DEBUG: Final catch error object:", error);
-			
-			// Enhanced final error checking with more comprehensive patterns
-			if (error.response && error.response.status === 200) {
-				console.log("SUCCESS: Final check detected via error.response.status === 200");
-				return true;
-			}
-			
-			// Check exact pattern from console logs
-			if (error.message && error.message.includes('net::ERR_FAILED 200 (OK)')) {
-				console.log("SUCCESS: Final check detected exact ERR_FAILED 200 (OK) pattern");
-				return true;
-			}
-			
-			// Check error message for success indicators
-			if (error.message && (error.message.includes('200') || error.message.includes('OK'))) {
-				console.log("SUCCESS: Final check detected 200/OK in error message:", error.message);
-				return true;
-			}
-			
-			// Check for ERR_FAILED with success indicators
-			if (error.code === 'ERR_FAILED' && error.message && 
-				(error.message.includes('200') || error.message.includes('OK'))) {
-				console.log("SUCCESS: Final check detected ERR_FAILED with success indicators");
-				return true;
-			}
-			
-			// Try to examine all properties of the error object for hidden success
-			try {
-				const errorProps = Object.getOwnPropertyNames(error);
-				console.log("DEBUG: Error object properties:", errorProps);
-				for (const prop of errorProps) {
-					const value = error[prop];
-					if (typeof value === 'string' && (value.includes('200') || value.includes('OK'))) {
-						console.log(`SUCCESS: Found success indicator in property ${prop}: ${value}`);
-						return true;
-					}
+			// Final fallback error checking
+			if (error.isAxiosError || error.name === 'AxiosError') {
+				if (error.code === 'ERR_NETWORK' && 
+					error.message === 'Network Error' && 
+					!error.response) {
+					return true;
 				}
-			} catch (e) {
-				console.log("DEBUG: Could not examine error properties");
+				
+				if (error.response && error.response.status === 200) {
+					return true;
+				}
 			}
 			
-			console.log("Syncthing status: Not running");
 			return false;
 		}
 	}
@@ -736,8 +664,8 @@ export default class SyncthingLauncher extends Plugin {
 				fileName = 'syncthing-linux';
 			}
 
-			// Download URL from our GitHub release
-			const downloadUrl = `https://github.com/muxammadreza/Obsidian-Syncthing-Launcher/releases/download/v${this.manifest.version}/${fileName}`;
+			// Download URL from our GitHub release - use stable release for binaries
+			const downloadUrl = `https://github.com/muxammadreza/Obsidian-Syncthing-Launcher/releases/download/v1.2.2/${fileName}`;
 			
 			// Download the file using Obsidian's requestUrl (bypasses CORS)
 			const response = await requestUrl({
