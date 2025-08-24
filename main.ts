@@ -1043,96 +1043,446 @@ export default class SyncthingLauncher extends Plugin {
 	}
 
 	/**
-	 * Download Syncthing executable using Node.js HTTP
+	 * Download Syncthing executable using official GitHub releases API
 	 */
 	async downloadSyncthingExecutable(): Promise<boolean> {
 		try {
-			new Notice('Downloading Syncthing executable... Please wait.', 8000);
+			new Notice('Fetching latest Syncthing release information...', 5000);
 			
-			// Determine platform and file name
-			let fileName: string;
-			if (process.platform === 'win32') {
-				fileName = 'syncthing-windows.exe';
-			} else if (process.platform === 'darwin') {
-				fileName = 'syncthing-macos';
-			} else {
-				fileName = 'syncthing-linux';
+			// First, get the latest release information from GitHub API
+			const releaseInfo = await this.getLatestSyncthingRelease();
+			if (!releaseInfo) {
+				new Notice('Failed to fetch latest Syncthing release information', 8000);
+				return false;
 			}
 
-			// Download URL from our GitHub release - use stable release for binaries
-			const downloadUrl = `https://github.com/muxammadreza/Obsidian-Syncthing-Launcher/releases/download/v1.2.2/${fileName}`;
+			// Determine platform and architecture
+			let platformPattern: string;
+			let expectedExecutableName: string;
 			
-			// Use Node.js https module for download
-			const https = require('https');
-			const url = require('url');
-			
-			return new Promise((resolve) => {
-				const parsedUrl = url.parse(downloadUrl);
-				
-				const options = {
-					hostname: parsedUrl.hostname,
-					port: 443,
-					path: parsedUrl.path,
-					method: 'GET'
-				};
+			if (process.platform === 'win32') {
+				// Windows - prefer amd64, fall back to 386 if needed
+				const arch = process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : '386';
+				platformPattern = `syncthing-windows-${arch}-v${releaseInfo.version}`;
+				expectedExecutableName = 'syncthing.exe';
+			} else if (process.platform === 'darwin') {
+				// macOS - prefer universal, fall back to specific arch
+				if (process.arch === 'arm64') {
+					platformPattern = `syncthing-macos-arm64-v${releaseInfo.version}`;
+				} else if (process.arch === 'x64') {
+					platformPattern = `syncthing-macos-amd64-v${releaseInfo.version}`;
+				} else {
+					// Try universal first as fallback
+					platformPattern = `syncthing-macos-universal-v${releaseInfo.version}`;
+				}
+				expectedExecutableName = 'syncthing';
+			} else {
+				// Linux and other Unix-like systems
+				const arch = process.arch === 'x64' ? 'amd64' : process.arch === 'arm64' ? 'arm64' : process.arch === 'arm' ? 'arm' : '386';
+				platformPattern = `syncthing-linux-${arch}-v${releaseInfo.version}`;
+				expectedExecutableName = 'syncthing';
+			}
 
-				const req = https.request(options, (res: any) => {
-					if (res.statusCode !== 200) {
-						resolve(false);
-						return;
-					}
+			// Find the matching asset
+			const asset = releaseInfo.assets.find((asset: any) => 
+				asset.name.startsWith(platformPattern)
+			);
 
-					const chunks: any[] = [];
-					res.on('data', (chunk: any) => chunks.push(chunk));
-					
-					res.on('end', () => {
-						try {
-							const data = Buffer.concat(chunks);
+			if (!asset) {
+				new Notice(`No Syncthing release found for ${process.platform} ${process.arch}. Available assets: ${releaseInfo.assets.map((a: any) => a.name).join(', ')}`, 10000);
+				return false;
+			}
 
-							// Create syncthing directory if it doesn't exist
-							const syncthingDir = `${this.getPluginAbsolutePath()}syncthing`;
-							
-							if (typeof require !== 'undefined') {
-								const fs = require('fs');
-								
-								// Create directory if it doesn't exist
-								if (!fs.existsSync(syncthingDir)) {
-									fs.mkdirSync(syncthingDir, { recursive: true });
-								}
+			new Notice(`Downloading Syncthing ${releaseInfo.version} for ${process.platform} ${process.arch}... Please wait.`, 8000);
+			console.log(`Downloading Syncthing from: ${asset.browser_download_url}`);
 
-								// Write the executable file
-								const executablePath = this.getSyncthingExecutablePath();
-								fs.writeFileSync(executablePath, data);
-								
-								// Make executable on Unix systems
-								if (process.platform !== 'win32') {
-									fs.chmodSync(executablePath, '755');
-								}
-								
-								new Notice('Syncthing executable downloaded and installed successfully!', 5000);
-								resolve(true);
-							} else {
-								resolve(false);
-							}
-						} catch (error) {
-							console.error('Failed to save downloaded file:', error);
-							resolve(false);
-						}
-					});
-				});
+			// Download the archive
+			const archiveData = await this.downloadFile(asset.browser_download_url);
+			if (!archiveData) {
+				new Notice('Failed to download Syncthing archive', 8000);
+				return false;
+			}
 
-				req.on('error', (error: any) => {
-					console.error('Download failed:', error);
-					resolve(false);
-				});
-
-				req.end();
-			});
+			// Extract and install the executable
+			const success = await this.extractAndInstallSyncthing(archiveData, asset.name, expectedExecutableName);
+			if (success) {
+				new Notice(`Syncthing ${releaseInfo.version} downloaded and installed successfully!`, 5000);
+				return true;
+			} else {
+				new Notice('Failed to extract and install Syncthing executable', 8000);
+				return false;
+			}
 
 		} catch (error) {
 			console.error('Failed to download Syncthing executable:', error);
 			new Notice(`Failed to download Syncthing executable: ${error.message}. Please download manually from GitHub release.`, 10000);
 			return false;
+		}
+	}
+
+	/**
+	 * Get latest release information from Syncthing GitHub API
+	 */
+	private async getLatestSyncthingRelease(): Promise<any> {
+		return new Promise((resolve, reject) => {
+			const https = require('https');
+			
+			const options = {
+				hostname: 'api.github.com',
+				port: 443,
+				path: '/repos/syncthing/syncthing/releases/latest',
+				method: 'GET',
+				headers: {
+					'User-Agent': 'Obsidian-Syncthing-Launcher-Plugin'
+				}
+			};
+
+			const req = https.request(options, (res: any) => {
+				let data = '';
+				
+				res.on('data', (chunk: any) => {
+					data += chunk;
+				});
+				
+				res.on('end', () => {
+					try {
+						const releaseData = JSON.parse(data);
+						if (res.statusCode !== 200) {
+							reject(new Error(`GitHub API error: ${res.statusCode} - ${releaseData.message || 'Unknown error'}`));
+							return;
+						}
+						
+						resolve({
+							version: releaseData.tag_name.replace('v', ''), // Remove 'v' prefix
+							assets: releaseData.assets,
+							html_url: releaseData.html_url
+						});
+					} catch (error) {
+						reject(new Error(`Failed to parse GitHub API response: ${error.message}`));
+					}
+				});
+			});
+
+			req.on('error', (error: any) => {
+				reject(new Error(`Failed to fetch release info: ${error.message}`));
+			});
+
+			req.setTimeout(10000, () => {
+				req.destroy();
+				reject(new Error('GitHub API request timeout'));
+			});
+
+			req.end();
+		});
+	}
+
+	/**
+	 * Download a file using Node.js HTTPS
+	 */
+	private async downloadFile(url: string): Promise<Buffer | null> {
+		return new Promise((resolve) => {
+			const https = require('https');
+			const urlModule = require('url');
+			
+			const parsedUrl = urlModule.parse(url);
+			
+			const options = {
+				hostname: parsedUrl.hostname,
+				port: 443,
+				path: parsedUrl.path,
+				method: 'GET',
+				headers: {
+					'User-Agent': 'Obsidian-Syncthing-Launcher-Plugin'
+				}
+			};
+
+			const req = https.request(options, (res: any) => {
+				if (res.statusCode === 302 || res.statusCode === 301) {
+					// Follow redirect
+					this.downloadFile(res.headers.location).then(resolve);
+					return;
+				}
+				
+				if (res.statusCode !== 200) {
+					console.error(`Download failed with status ${res.statusCode}`);
+					resolve(null);
+					return;
+				}
+
+				const chunks: any[] = [];
+				res.on('data', (chunk: any) => chunks.push(chunk));
+				
+				res.on('end', () => {
+					resolve(Buffer.concat(chunks));
+				});
+			});
+
+			req.on('error', (error: any) => {
+				console.error('Download failed:', error);
+				resolve(null);
+			});
+
+			req.setTimeout(60000, () => { // 60 second timeout for large files
+				req.destroy();
+				console.error('Download timeout');
+				resolve(null);
+			});
+
+			req.end();
+		});
+	}
+
+	/**
+	 * Extract and install Syncthing executable from downloaded archive
+	 */
+	private async extractAndInstallSyncthing(archiveData: Buffer, archiveName: string, executableName: string): Promise<boolean> {
+		if (typeof require === 'undefined') {
+			console.error('File system operations not available');
+			return false;
+		}
+
+		try {
+			const fs = require('fs');
+			const path = require('path');
+			
+			// Create syncthing directory if it doesn't exist
+			const syncthingDir = path.join(this.getPluginAbsolutePath(), 'syncthing');
+			if (!fs.existsSync(syncthingDir)) {
+				fs.mkdirSync(syncthingDir, { recursive: true });
+			}
+
+			// Determine if it's a zip or tar.gz file
+			const isZip = archiveName.endsWith('.zip');
+			const isTarGz = archiveName.endsWith('.tar.gz');
+
+			if (isZip) {
+				// Handle ZIP files (Windows, macOS)
+				const yauzl = await this.extractZip(archiveData, syncthingDir, executableName);
+				return yauzl;
+			} else if (isTarGz) {
+				// Handle TAR.GZ files (Linux)
+				return await this.extractTarGz(archiveData, syncthingDir, executableName);
+			} else {
+				console.error('Unsupported archive format:', archiveName);
+				return false;
+			}
+
+		} catch (error) {
+			console.error('Failed to extract archive:', error);
+			return false;
+		}
+	}
+
+	/**
+	 * Extract ZIP archive (for Windows and macOS)
+	 */
+	private async extractZip(zipData: Buffer, targetDir: string, executableName: string): Promise<boolean> {
+		try {
+			// For now, let's use a simple approach - save the archive and use system extraction
+			const fs = require('fs');
+			const path = require('path');
+			const { spawn } = require('child_process');
+			
+			const tempZipPath = path.join(targetDir, 'temp-syncthing.zip');
+			fs.writeFileSync(tempZipPath, zipData);
+
+			// Try to extract using system unzip command
+			return new Promise((resolve) => {
+				let extractCommand: string;
+				let extractArgs: string[];
+
+				if (process.platform === 'win32') {
+					// Windows - try PowerShell Expand-Archive
+					extractCommand = 'powershell';
+					extractArgs = ['-Command', `Expand-Archive -Path "${tempZipPath}" -DestinationPath "${targetDir}" -Force`];
+				} else {
+					// macOS/Linux - use unzip
+					extractCommand = 'unzip';
+					extractArgs = ['-o', tempZipPath, '-d', targetDir];
+				}
+
+				const extractProcess = spawn(extractCommand, extractArgs);
+				
+				extractProcess.on('close', (code: number) => {
+					try {
+						// Clean up temp file
+						if (fs.existsSync(tempZipPath)) {
+							fs.unlinkSync(tempZipPath);
+						}
+
+						if (code === 0) {
+							// Find the extracted executable
+							this.findAndCopyExecutable(targetDir, executableName).then(resolve);
+						} else {
+							console.error('Extraction failed with code:', code);
+							resolve(false);
+						}
+					} catch (error) {
+						console.error('Post-extraction error:', error);
+						resolve(false);
+					}
+				});
+
+				extractProcess.on('error', (error: any) => {
+					console.error('Extraction command failed:', error);
+					// Clean up temp file
+					try {
+						if (fs.existsSync(tempZipPath)) {
+							fs.unlinkSync(tempZipPath);
+						}
+					} catch {}
+					resolve(false);
+				});
+			});
+
+		} catch (error) {
+			console.error('ZIP extraction error:', error);
+			return false;
+		}
+	}
+
+	/**
+	 * Extract TAR.GZ archive (for Linux)
+	 */
+	private async extractTarGz(tarData: Buffer, targetDir: string, executableName: string): Promise<boolean> {
+		try {
+			const fs = require('fs');
+			const path = require('path');
+			const { spawn } = require('child_process');
+			
+			const tempTarPath = path.join(targetDir, 'temp-syncthing.tar.gz');
+			fs.writeFileSync(tempTarPath, tarData);
+
+			// Extract using tar command
+			return new Promise((resolve) => {
+				const extractProcess = spawn('tar', ['-xzf', tempTarPath, '-C', targetDir]);
+				
+				extractProcess.on('close', (code: number) => {
+					try {
+						// Clean up temp file
+						if (fs.existsSync(tempTarPath)) {
+							fs.unlinkSync(tempTarPath);
+						}
+
+						if (code === 0) {
+							// Find the extracted executable
+							this.findAndCopyExecutable(targetDir, executableName).then(resolve);
+						} else {
+							console.error('TAR extraction failed with code:', code);
+							resolve(false);
+						}
+					} catch (error) {
+						console.error('Post-extraction error:', error);
+						resolve(false);
+					}
+				});
+
+				extractProcess.on('error', (error: any) => {
+					console.error('TAR extraction command failed:', error);
+					// Clean up temp file
+					try {
+						if (fs.existsSync(tempTarPath)) {
+							fs.unlinkSync(tempTarPath);
+						}
+					} catch {}
+					resolve(false);
+				});
+			});
+
+		} catch (error) {
+			console.error('TAR.GZ extraction error:', error);
+			return false;
+		}
+	}
+
+	/**
+	 * Find and copy the Syncthing executable to the final location
+	 */
+	private async findAndCopyExecutable(extractDir: string, executableName: string): Promise<boolean> {
+		try {
+			const fs = require('fs');
+			const path = require('path');
+
+			// Recursively search for the executable
+			const findExecutable = (dir: string): string | null => {
+				const items = fs.readdirSync(dir);
+				
+				for (const item of items) {
+					const itemPath = path.join(dir, item);
+					const stat = fs.statSync(itemPath);
+					
+					if (stat.isFile() && item === executableName) {
+						return itemPath;
+					} else if (stat.isDirectory()) {
+						const found = findExecutable(itemPath);
+						if (found) return found;
+					}
+				}
+				return null;
+			};
+
+			const executablePath = findExecutable(extractDir);
+			if (!executablePath) {
+				console.error(`Executable ${executableName} not found in extracted archive`);
+				return false;
+			}
+
+			// Copy to final location based on platform
+			let finalPath: string;
+			if (process.platform === 'win32') {
+				finalPath = path.join(extractDir, 'syncthing.exe');
+			} else if (process.platform === 'darwin') {
+				finalPath = path.join(extractDir, 'syncthing-macos');
+			} else {
+				finalPath = path.join(extractDir, 'syncthing-linux');
+			}
+
+			// Copy the executable
+			fs.copyFileSync(executablePath, finalPath);
+			
+			// Make executable on Unix systems
+			if (process.platform !== 'win32') {
+				fs.chmodSync(finalPath, '755');
+			}
+
+			// Clean up extracted directory structure, keep only our renamed executable
+			this.cleanupExtractedFiles(extractDir, path.basename(finalPath));
+
+			console.log(`Syncthing executable installed to: ${finalPath}`);
+			return true;
+
+		} catch (error) {
+			console.error('Failed to find and copy executable:', error);
+			return false;
+		}
+	}
+
+	/**
+	 * Clean up extracted files, keeping only the renamed executable
+	 */
+	private cleanupExtractedFiles(dir: string, keepFile: string): void {
+		try {
+			const fs = require('fs');
+			const path = require('path');
+
+			const items = fs.readdirSync(dir);
+			
+			for (const item of items) {
+				if (item === keepFile) continue; // Keep our executable
+				
+				const itemPath = path.join(dir, item);
+				const stat = fs.statSync(itemPath);
+				
+				if (stat.isDirectory()) {
+					// Remove directory recursively
+					fs.rmSync(itemPath, { recursive: true, force: true });
+				} else {
+					// Remove file
+					fs.unlinkSync(itemPath);
+				}
+			}
+		} catch (error) {
+			console.error('Cleanup error (non-fatal):', error);
 		}
 	}
 
