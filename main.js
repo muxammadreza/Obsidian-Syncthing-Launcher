@@ -645,7 +645,6 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
     });
   }
   stopSyncthing() {
-    var _a;
     this.monitor.stopMonitoring();
     if (this.isMobile || this.settings.mobileMode) {
       console.log("Mobile mode: No local Syncthing to stop");
@@ -673,22 +672,44 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         console.log("Output:", stdout);
       });
     } else {
-      if (!this.syncthingInstance) {
-        console.log("No local Syncthing instance to stop");
-        return;
-      }
+      this.killAllSyncthingProcesses();
+    }
+  }
+  /**
+   * Kill all Syncthing processes to prevent orphaned instances
+   */
+  killAllSyncthingProcesses() {
+    var _a;
+    if (this.syncthingInstance) {
       const pid = (_a = this.syncthingInstance) == null ? void 0 : _a.pid;
       if (pid !== void 0) {
         var kill = require_tree_kill();
         kill(pid, "SIGTERM", (err) => {
           if (err) {
-            console.error("Failed to kill process tree:", err);
+            console.error("Failed to kill tracked process tree:", err);
           } else {
-            console.log("Process tree killed successfully.");
+            console.log("Tracked process tree killed successfully.");
           }
         });
-        this.syncthingInstance = null;
       }
+      this.syncthingInstance = null;
+    }
+    if (exec) {
+      let killCommand;
+      if (process.platform === "win32") {
+        killCommand = "taskkill /F /IM syncthing.exe /T";
+      } else {
+        killCommand = "pkill -f syncthing";
+      }
+      exec(killCommand, (error, stdout, stderr) => {
+        if (error) {
+          if (!error.message.includes("not found") && !error.message.includes("No such process")) {
+            console.log("Error killing Syncthing processes:", error.message);
+          }
+        } else {
+          console.log("All Syncthing processes terminated");
+        }
+      });
     }
   }
   /**
@@ -1656,63 +1677,78 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
     const executableItem = statusInfo.createDiv("syncthing-info-item");
     executableItem.createDiv({ cls: "syncthing-info-label", text: "Executable" });
     const executableValue = executableItem.createDiv("syncthing-info-value");
-    this.plugin.checkExecutableExists().then((exists) => {
-      executableValue.textContent = exists ? "Found" : "Not found";
-    });
+    if (this.plugin.detectMobilePlatform() || this.plugin.settings.mobileMode) {
+      executableValue.textContent = "Remote Mode";
+    } else {
+      this.plugin.checkExecutableExists().then((exists) => {
+        executableValue.textContent = exists ? "Found" : "Not found";
+      });
+    }
     const configItem = statusInfo.createDiv("syncthing-info-item");
-    configItem.createDiv({ cls: "syncthing-info-label", text: "Config" });
+    configItem.createDiv({ cls: "syncthing-info-label", text: "API Key" });
     const configValue = configItem.createDiv("syncthing-info-value");
     configValue.textContent = this.plugin.settings.syncthingApiKey ? "Configured" : "Not configured";
     const modeItem = statusInfo.createDiv("syncthing-info-item");
     modeItem.createDiv({ cls: "syncthing-info-label", text: "Mode" });
     const modeValue = modeItem.createDiv("syncthing-info-value");
-    modeValue.textContent = this.plugin.settings.mobileMode ? "Mobile" : "Desktop";
+    const mode = this.plugin.detectMobilePlatform() ? "Mobile" : this.plugin.settings.mobileMode ? "Remote" : "Desktop";
+    modeValue.textContent = mode;
     const urlItem = statusInfo.createDiv("syncthing-info-item");
     urlItem.createDiv({ cls: "syncthing-info-label", text: "URL" });
     const urlValue = urlItem.createDiv("syncthing-info-value");
     urlValue.textContent = this.plugin.getSyncthingURL();
+    const devicesItem = statusInfo.createDiv("syncthing-info-item");
+    devicesItem.createDiv({ cls: "syncthing-info-label", text: "Devices" });
+    const devicesValue = devicesItem.createDiv("syncthing-info-value");
+    devicesValue.textContent = "0/0";
+    const syncItem = statusInfo.createDiv("syncthing-info-item");
+    syncItem.createDiv({ cls: "syncthing-info-label", text: "Sync Progress" });
+    const syncValue = syncItem.createDiv("syncthing-info-value");
+    syncValue.textContent = "Unknown";
     const controls = statusCard.createDiv("syncthing-controls");
-    const startBtn = controls.createEl("button", {
-      cls: "syncthing-btn success",
-      text: "\u{1F680} Start"
-    });
-    startBtn.addEventListener("click", async () => {
-      try {
-        await this.plugin.startSyncthing();
-        new import_obsidian.Notice("Syncthing started successfully");
-        this.updateStatus();
-      } catch (error) {
-        new import_obsidian.Notice(`Failed to start Syncthing: ${error.message}`);
-      }
-    });
-    const stopBtn = controls.createEl("button", {
-      cls: "syncthing-btn danger",
-      text: "\u23F9\uFE0F Stop"
-    });
-    stopBtn.addEventListener("click", async () => {
-      try {
-        await this.plugin.stopSyncthing();
-        new import_obsidian.Notice("Syncthing stopped");
-        this.updateStatus();
-      } catch (error) {
-        new import_obsidian.Notice(`Failed to stop Syncthing: ${error.message}`);
-      }
-    });
-    const restartBtn = controls.createEl("button", {
-      cls: "syncthing-btn secondary",
-      text: "\u{1F504} Restart"
-    });
-    restartBtn.addEventListener("click", async () => {
-      try {
-        await this.plugin.stopSyncthing();
-        await new Promise((resolve) => setTimeout(resolve, 1e3));
-        await this.plugin.startSyncthing();
-        new import_obsidian.Notice("Syncthing restarted");
-        this.updateStatus();
-      } catch (error) {
-        new import_obsidian.Notice(`Failed to restart Syncthing: ${error.message}`);
-      }
-    });
+    if (!this.plugin.detectMobilePlatform() && !this.plugin.settings.mobileMode) {
+      const startBtn = controls.createEl("button", {
+        cls: "syncthing-btn success",
+        text: "\u{1F680} Start"
+      });
+      startBtn.addEventListener("click", async () => {
+        try {
+          await this.plugin.startSyncthing();
+          new import_obsidian.Notice("Syncthing started successfully");
+          this.updateStatus();
+        } catch (error) {
+          new import_obsidian.Notice(`Failed to start Syncthing: ${error.message}`);
+        }
+      });
+      const stopBtn = controls.createEl("button", {
+        cls: "syncthing-btn danger",
+        text: "\u23F9\uFE0F Stop"
+      });
+      stopBtn.addEventListener("click", async () => {
+        try {
+          await this.plugin.stopSyncthing();
+          new import_obsidian.Notice("Syncthing stopped");
+          this.updateStatus();
+        } catch (error) {
+          new import_obsidian.Notice(`Failed to stop Syncthing: ${error.message}`);
+        }
+      });
+      const restartBtn = controls.createEl("button", {
+        cls: "syncthing-btn secondary",
+        text: "\u{1F504} Restart"
+      });
+      restartBtn.addEventListener("click", async () => {
+        try {
+          await this.plugin.stopSyncthing();
+          await new Promise((resolve) => setTimeout(resolve, 2e3));
+          await this.plugin.startSyncthing();
+          new import_obsidian.Notice("Syncthing restarted");
+          this.updateStatus();
+        } catch (error) {
+          new import_obsidian.Notice(`Failed to restart Syncthing: ${error.message}`);
+        }
+      });
+    }
     const openBtn = controls.createEl("button", {
       cls: "syncthing-btn primary",
       text: "\u{1F310} Open GUI"
@@ -1721,6 +1757,11 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
       const url = this.plugin.getSyncthingURL();
       window.open(url, "_blank");
     });
+    const refreshBtn = controls.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u{1F504} Refresh Status"
+    });
+    refreshBtn.addEventListener("click", () => this.updateStatus());
     const updateStatusFromMonitor = (data) => {
       let statusText = "\u2753 Unknown";
       let statusClass = "unknown";
@@ -1739,13 +1780,26 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
       } else if (data.fileCompletion !== void 0 && data.fileCompletion < 100) {
         statusText = `Syncing (${data.fileCompletion.toFixed(1)}%)`;
         statusClass = "running";
-      } else {
+      } else if (data.connectedDevicesCount > 0) {
         statusText = "Connected";
         statusClass = "running";
       }
       statusIndicator.className = `syncthing-status-indicator ${statusClass}`;
       statusIndicator.textContent = statusText;
+      if (data.availableDevices !== void 0 && data.connectedDevicesCount !== void 0) {
+        devicesValue.textContent = `${data.connectedDevicesCount}/${data.availableDevices}`;
+      }
+      if (data.fileCompletion !== void 0 && !isNaN(data.fileCompletion)) {
+        syncValue.textContent = `${data.fileCompletion.toFixed(1)}%`;
+      } else if (data.status === "scanning") {
+        syncValue.textContent = "Scanning...";
+      } else if (data.connectedDevicesCount > 0) {
+        syncValue.textContent = "Up to date";
+      } else {
+        syncValue.textContent = "Unknown";
+      }
     };
+    this.plugin.monitor.off("status-update", updateStatusFromMonitor);
     this.plugin.monitor.on("status-update", updateStatusFromMonitor);
     this.updateStatus();
   }

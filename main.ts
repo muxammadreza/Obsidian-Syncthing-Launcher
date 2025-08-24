@@ -668,8 +668,7 @@ export default class SyncthingLauncher extends Plugin {
 			return;
 		}
 
-		if (this.settings.useDocker)
-		{
+		if (this.settings.useDocker) {
 			if (!exec) {
 				console.log('Docker operations not available on mobile platforms');
 				return;
@@ -693,27 +692,55 @@ export default class SyncthingLauncher extends Plugin {
 	
 				console.log('Output:', stdout);
 			});
+		} else {
+			// Enhanced process stopping - kill ALL Syncthing processes
+			this.killAllSyncthingProcesses();
 		}
-		else
-		{
-			if (!this.syncthingInstance) {
-				console.log('No local Syncthing instance to stop');
-				return;
-			}
+	}
 
-			const pid : number | undefined = this.syncthingInstance?.pid;
+	/**
+	 * Kill all Syncthing processes to prevent orphaned instances
+	 */
+	private killAllSyncthingProcesses(): void {
+		// First try to stop the tracked instance
+		if (this.syncthingInstance) {
+			const pid: number | undefined = this.syncthingInstance?.pid;
 			if (pid !== undefined) {
 				var kill = require('tree-kill');
 				kill(pid, 'SIGTERM', (err: any) => {
 					if (err) {
-						console.error('Failed to kill process tree:', err);
+						console.error('Failed to kill tracked process tree:', err);
 					} else {
-						console.log('Process tree killed successfully.');
+						console.log('Tracked process tree killed successfully.');
 					}
 				});
-				// Clear the instance reference
-				this.syncthingInstance = null;
 			}
+			// Clear the instance reference
+			this.syncthingInstance = null;
+		}
+
+		// Then try to kill any other Syncthing processes by name
+		if (exec) {
+			let killCommand: string;
+			
+			if (process.platform === 'win32') {
+				// Windows: Kill by process name
+				killCommand = 'taskkill /F /IM syncthing.exe /T';
+			} else {
+				// Unix-like: Kill by process name
+				killCommand = 'pkill -f syncthing';
+			}
+
+			exec(killCommand, (error: any, stdout: any, stderr: any) => {
+				if (error) {
+					// Not finding processes to kill is not an error
+					if (!error.message.includes('not found') && !error.message.includes('No such process')) {
+						console.log('Error killing Syncthing processes:', error.message);
+					}
+				} else {
+					console.log('All Syncthing processes terminated');
+				}
+			});
 		}
 	}
 
@@ -1947,72 +1974,94 @@ class SettingTab extends PluginSettingTab {
 		const executableItem = statusInfo.createDiv('syncthing-info-item');
 		executableItem.createDiv({ cls: 'syncthing-info-label', text: 'Executable' });
 		const executableValue = executableItem.createDiv('syncthing-info-value');
-		this.plugin.checkExecutableExists().then(exists => {
-			executableValue.textContent = exists ? 'Found' : 'Not found';
-		});
+		
+		// Check executable status based on platform
+		if (this.plugin.detectMobilePlatform() || this.plugin.settings.mobileMode) {
+			executableValue.textContent = 'Remote Mode';
+		} else {
+			this.plugin.checkExecutableExists().then(exists => {
+				executableValue.textContent = exists ? 'Found' : 'Not found';
+			});
+		}
 
 		const configItem = statusInfo.createDiv('syncthing-info-item');
-		configItem.createDiv({ cls: 'syncthing-info-label', text: 'Config' });
+		configItem.createDiv({ cls: 'syncthing-info-label', text: 'API Key' });
 		const configValue = configItem.createDiv('syncthing-info-value');
 		configValue.textContent = this.plugin.settings.syncthingApiKey ? 'Configured' : 'Not configured';
 
 		const modeItem = statusInfo.createDiv('syncthing-info-item');
 		modeItem.createDiv({ cls: 'syncthing-info-label', text: 'Mode' });
 		const modeValue = modeItem.createDiv('syncthing-info-value');
-		modeValue.textContent = this.plugin.settings.mobileMode ? 'Mobile' : 'Desktop';
+		const mode = this.plugin.detectMobilePlatform() ? 'Mobile' : (this.plugin.settings.mobileMode ? 'Remote' : 'Desktop');
+		modeValue.textContent = mode;
 
 		const urlItem = statusInfo.createDiv('syncthing-info-item');
 		urlItem.createDiv({ cls: 'syncthing-info-label', text: 'URL' });
 		const urlValue = urlItem.createDiv('syncthing-info-value');
 		urlValue.textContent = this.plugin.getSyncthingURL();
 
-		// Controls
+		// Additional status info from monitor
+		const devicesItem = statusInfo.createDiv('syncthing-info-item');
+		devicesItem.createDiv({ cls: 'syncthing-info-label', text: 'Devices' });
+		const devicesValue = devicesItem.createDiv('syncthing-info-value');
+		devicesValue.textContent = '0/0';
+
+		const syncItem = statusInfo.createDiv('syncthing-info-item');
+		syncItem.createDiv({ cls: 'syncthing-info-label', text: 'Sync Progress' });
+		const syncValue = syncItem.createDiv('syncthing-info-value');
+		syncValue.textContent = 'Unknown';
+
+		// Controls - adapt based on platform
 		const controls = statusCard.createDiv('syncthing-controls');
 		
-		const startBtn = controls.createEl('button', {
-			cls: 'syncthing-btn success',
-			text: '🚀 Start'
-		});
-		startBtn.addEventListener('click', async () => {
-			try {
-				await this.plugin.startSyncthing();
-				new Notice('Syncthing started successfully');
-				this.updateStatus();
-			} catch (error) {
-				new Notice(`Failed to start Syncthing: ${error.message}`);
-			}
-		});
+		if (!this.plugin.detectMobilePlatform() && !this.plugin.settings.mobileMode) {
+			// Desktop controls
+			const startBtn = controls.createEl('button', {
+				cls: 'syncthing-btn success',
+				text: '🚀 Start'
+			});
+			startBtn.addEventListener('click', async () => {
+				try {
+					await this.plugin.startSyncthing();
+					new Notice('Syncthing started successfully');
+					this.updateStatus();
+				} catch (error) {
+					new Notice(`Failed to start Syncthing: ${error.message}`);
+				}
+			});
 
-		const stopBtn = controls.createEl('button', {
-			cls: 'syncthing-btn danger',
-			text: '⏹️ Stop'
-		});
-		stopBtn.addEventListener('click', async () => {
-			try {
-				await this.plugin.stopSyncthing();
-				new Notice('Syncthing stopped');
-				this.updateStatus();
-			} catch (error) {
-				new Notice(`Failed to stop Syncthing: ${error.message}`);
-			}
-		});
+			const stopBtn = controls.createEl('button', {
+				cls: 'syncthing-btn danger',
+				text: '⏹️ Stop'
+			});
+			stopBtn.addEventListener('click', async () => {
+				try {
+					await this.plugin.stopSyncthing();
+					new Notice('Syncthing stopped');
+					this.updateStatus();
+				} catch (error) {
+					new Notice(`Failed to stop Syncthing: ${error.message}`);
+				}
+			});
 
-		const restartBtn = controls.createEl('button', {
-			cls: 'syncthing-btn secondary',
-			text: '🔄 Restart'
-		});
-		restartBtn.addEventListener('click', async () => {
-			try {
-				await this.plugin.stopSyncthing();
-				await new Promise(resolve => setTimeout(resolve, 1000));
-				await this.plugin.startSyncthing();
-				new Notice('Syncthing restarted');
-				this.updateStatus();
-			} catch (error) {
-				new Notice(`Failed to restart Syncthing: ${error.message}`);
-			}
-		});
+			const restartBtn = controls.createEl('button', {
+				cls: 'syncthing-btn secondary',
+				text: '🔄 Restart'
+			});
+			restartBtn.addEventListener('click', async () => {
+				try {
+					await this.plugin.stopSyncthing();
+					await new Promise(resolve => setTimeout(resolve, 2000)); // Wait longer for cleanup
+					await this.plugin.startSyncthing();
+					new Notice('Syncthing restarted');
+					this.updateStatus();
+				} catch (error) {
+					new Notice(`Failed to restart Syncthing: ${error.message}`);
+				}
+			});
+		}
 
+		// Universal controls (work on both desktop and mobile)
 		const openBtn = controls.createEl('button', {
 			cls: 'syncthing-btn primary',
 			text: '🌐 Open GUI'
@@ -2022,7 +2071,13 @@ class SettingTab extends PluginSettingTab {
 			window.open(url, '_blank');
 		});
 
-		// Real-time status from monitor
+		const refreshBtn = controls.createEl('button', {
+			cls: 'syncthing-btn secondary',
+			text: '🔄 Refresh Status'
+		});
+		refreshBtn.addEventListener('click', () => this.updateStatus());
+
+		// Wire up real-time status updates from monitor
 		const updateStatusFromMonitor = (data: any) => {
 			let statusText = '❓ Unknown';
 			let statusClass = 'unknown';
@@ -2042,15 +2097,35 @@ class SettingTab extends PluginSettingTab {
 			} else if (data.fileCompletion !== undefined && data.fileCompletion < 100) {
 				statusText = `Syncing (${data.fileCompletion.toFixed(1)}%)`;
 				statusClass = 'running';
-			} else {
+			} else if (data.connectedDevicesCount > 0) {
 				statusText = 'Connected';
 				statusClass = 'running';
 			}
 
+			// Update status indicator
 			statusIndicator.className = `syncthing-status-indicator ${statusClass}`;
 			statusIndicator.textContent = statusText;
+
+			// Update devices info
+			if (data.availableDevices !== undefined && data.connectedDevicesCount !== undefined) {
+				devicesValue.textContent = `${data.connectedDevicesCount}/${data.availableDevices}`;
+			}
+
+			// Update sync progress
+			if (data.fileCompletion !== undefined && !isNaN(data.fileCompletion)) {
+				syncValue.textContent = `${data.fileCompletion.toFixed(1)}%`;
+			} else if (data.status === "scanning") {
+				syncValue.textContent = 'Scanning...';
+			} else if (data.connectedDevicesCount > 0) {
+				syncValue.textContent = 'Up to date';
+			} else {
+				syncValue.textContent = 'Unknown';
+			}
 		};
 
+		// Remove any existing listeners to prevent duplicates
+		this.plugin.monitor.off('status-update', updateStatusFromMonitor);
+		// Add the new listener
 		this.plugin.monitor.on('status-update', updateStatusFromMonitor);
 
 		// Update status immediately
