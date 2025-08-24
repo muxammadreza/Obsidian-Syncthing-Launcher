@@ -614,7 +614,13 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
           `127.0.0.1:${port}`
         ];
         console.log(`Starting Syncthing with args: ${args.join(" ")}`);
-        this.syncthingInstance = spawn(executablePath, args);
+        try {
+          this.syncthingInstance = spawn(executablePath, args);
+        } catch (spawnError) {
+          console.error("Failed to spawn Syncthing process:", spawnError);
+          new import_obsidian.Notice(`Failed to start Syncthing: ${spawnError.message}. Try re-downloading the executable.`, 1e4);
+          return;
+        }
         this.syncthingInstance.stdout.on("data", (data) => {
           console.log(`stdout: ${data}`);
         });
@@ -623,6 +629,14 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         });
         this.syncthingInstance.on("exit", (code) => {
           console.log(`child process exited with code ${code}`);
+        });
+        this.syncthingInstance.on("error", (error) => {
+          console.error("Syncthing process error:", error);
+          if (error.code === "ENOEXEC") {
+            new import_obsidian.Notice("Syncthing executable cannot be run. This may be due to permission issues or corrupted download. Try re-downloading the executable.", 15e3);
+          } else {
+            new import_obsidian.Notice(`Syncthing process error: ${error.message}`, 1e4);
+          }
         });
         setTimeout(() => {
           this.startStatusMonitoring();
@@ -937,7 +951,30 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       if (typeof require !== "undefined") {
         try {
           const fs = require("fs");
-          return fs.existsSync(executablePath);
+          if (!fs.existsSync(executablePath)) {
+            console.log("Executable file does not exist:", executablePath);
+            return false;
+          }
+          try {
+            fs.accessSync(executablePath, fs.constants.F_OK | fs.constants.X_OK);
+            console.log("\u2705 Executable exists and is executable:", executablePath);
+            return true;
+          } catch (permError) {
+            console.log("\u274C Executable exists but is not executable:", executablePath, permError.message);
+            if (process.platform !== "win32") {
+              try {
+                fs.chmodSync(executablePath, "755");
+                console.log("Fixed executable permissions");
+                fs.accessSync(executablePath, fs.constants.F_OK | fs.constants.X_OK);
+                console.log("\u2705 Executable permissions fixed");
+                return true;
+              } catch (fixError) {
+                console.log("\u274C Could not fix executable permissions:", fixError.message);
+                return false;
+              }
+            }
+            return false;
+          }
         } catch (error) {
           console.error("Error checking file with fs:", error);
         }
@@ -1235,6 +1272,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
     try {
       const fs = require("fs");
       const path = require("path");
+      const { exec: exec2 } = require("child_process");
       const findExecutable = (dir) => {
         const items = fs.readdirSync(dir);
         for (const item of items) {
@@ -1266,9 +1304,35 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       fs.copyFileSync(executablePath, finalPath);
       if (process.platform !== "win32") {
         fs.chmodSync(finalPath, "755");
+        if (process.platform === "darwin") {
+          try {
+            await new Promise((resolve, reject) => {
+              exec2(`xattr -d com.apple.quarantine "${finalPath}"`, (error) => {
+                if (error && !error.message.includes("No such xattr")) {
+                  console.log("Note: Could not remove quarantine attribute:", error.message);
+                } else {
+                  console.log("Removed macOS quarantine attribute from executable");
+                }
+                resolve();
+              });
+            });
+          } catch (error) {
+            console.log("Note: Could not remove quarantine attribute (non-fatal):", error);
+          }
+        }
       }
       this.cleanupExtractedFiles(extractDir, path.basename(finalPath));
       console.log(`Syncthing executable installed to: ${finalPath}`);
+      try {
+        const stats = fs.statSync(finalPath);
+        const mode = stats.mode;
+        console.log(`Executable permissions: ${(mode & parseInt("777", 8)).toString(8)}`);
+        fs.accessSync(finalPath, fs.constants.F_OK | fs.constants.X_OK);
+        console.log("\u2705 Executable permissions verified");
+      } catch (permError) {
+        console.error("\u274C Executable permissions issue:", permError);
+        throw new Error(`Executable not accessible: ${permError.message}`);
+      }
       return true;
     } catch (error) {
       console.error("Failed to find and copy executable:", error);
@@ -1498,6 +1562,41 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
         new import_obsidian.Notice("\u2705 Syncthing executable found and accessible");
       } else {
         new import_obsidian.Notice("\u274C Syncthing executable not found");
+      }
+    }));
+    new import_obsidian.Setting(binarySection).setName("Re-download Executable").setDesc("Force re-download the Syncthing executable (useful if you encounter permission or execution issues)").addButton((button) => button.setButtonText("Re-download").setTooltip("Force re-download Syncthing binary").onClick(async () => {
+      try {
+        const executablePath = this.plugin.getSyncthingExecutablePath();
+        if (typeof require !== "undefined") {
+          const fs = require("fs");
+          const path = require("path");
+          try {
+            const syncthingDir = path.dirname(executablePath);
+            if (fs.existsSync(syncthingDir)) {
+              fs.rmSync(syncthingDir, { recursive: true, force: true });
+              console.log("Removed existing Syncthing directory for clean re-download");
+            }
+          } catch (removeError) {
+            console.log("Could not remove existing executable (non-fatal):", removeError);
+          }
+        }
+        new import_obsidian.Notice("Starting forced re-download of Syncthing executable...", 5e3);
+        const success = await this.plugin.downloadSyncthingExecutable();
+        if (success) {
+          new import_obsidian.Notice("\u2705 Syncthing executable re-downloaded successfully!");
+          setTimeout(async () => {
+            const isExecutable = await this.plugin.checkExecutableExists();
+            if (isExecutable) {
+              new import_obsidian.Notice("\u2705 Executable verified and ready to use!");
+            } else {
+              new import_obsidian.Notice("\u26A0\uFE0F Re-downloaded executable may still have issues. Check console for details.");
+            }
+          }, 1e3);
+        } else {
+          new import_obsidian.Notice("\u274C Failed to re-download Syncthing executable");
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`Re-download failed: ${error.message}`);
       }
     }));
     new import_obsidian.Setting(binarySection).setName("Download Executable").setDesc("Download the Syncthing executable for your platform").addButton((button) => button.setButtonText("Download").setTooltip("Download Syncthing binary").onClick(async () => {

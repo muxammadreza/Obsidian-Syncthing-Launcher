@@ -621,8 +621,13 @@ export default class SyncthingLauncher extends Plugin {
 				
 				console.log(`Starting Syncthing with args: ${args.join(' ')}`);
 				
-				
-				this.syncthingInstance = spawn(executablePath, args);
+				try {
+					this.syncthingInstance = spawn(executablePath, args);
+				} catch (spawnError) {
+					console.error('Failed to spawn Syncthing process:', spawnError);
+					new Notice(`Failed to start Syncthing: ${spawnError.message}. Try re-downloading the executable.`, 10000);
+					return;
+				}
 
 				this.syncthingInstance.stdout.on('data', (data: any) => {
 					console.log(`stdout: ${data}`);
@@ -634,6 +639,15 @@ export default class SyncthingLauncher extends Plugin {
 
 				this.syncthingInstance.on('exit', (code: any) => {
 					console.log(`child process exited with code ${code}`);
+				});
+
+				this.syncthingInstance.on('error', (error: any) => {
+					console.error('Syncthing process error:', error);
+					if (error.code === 'ENOEXEC') {
+						new Notice('Syncthing executable cannot be run. This may be due to permission issues or corrupted download. Try re-downloading the executable.', 15000);
+					} else {
+						new Notice(`Syncthing process error: ${error.message}`, 10000);
+					}
 				});
 
 				// Start monitoring after a short delay to allow Syncthing to start
@@ -1029,7 +1043,38 @@ export default class SyncthingLauncher extends Plugin {
 			if (typeof require !== 'undefined') {
 				try {
 					const fs = require('fs');
-					return fs.existsSync(executablePath);
+					
+					// Check if file exists
+					if (!fs.existsSync(executablePath)) {
+						console.log('Executable file does not exist:', executablePath);
+						return false;
+					}
+					
+					// Check if file is executable
+					try {
+						fs.accessSync(executablePath, fs.constants.F_OK | fs.constants.X_OK);
+						console.log('✅ Executable exists and is executable:', executablePath);
+						return true;
+					} catch (permError) {
+						console.log('❌ Executable exists but is not executable:', executablePath, permError.message);
+						
+						// Try to fix permissions if it's a permission issue
+						if (process.platform !== 'win32') {
+							try {
+								fs.chmodSync(executablePath, '755');
+								console.log('Fixed executable permissions');
+								
+								// Try again after fixing permissions
+								fs.accessSync(executablePath, fs.constants.F_OK | fs.constants.X_OK);
+								console.log('✅ Executable permissions fixed');
+								return true;
+							} catch (fixError) {
+								console.log('❌ Could not fix executable permissions:', fixError.message);
+								return false;
+							}
+						}
+						return false;
+					}
 				} catch (error) {
 					console.error('Error checking file with fs:', error);
 				}
@@ -1402,6 +1447,7 @@ export default class SyncthingLauncher extends Plugin {
 		try {
 			const fs = require('fs');
 			const path = require('path');
+			const { exec } = require('child_process');
 
 			// Recursively search for the executable
 			const findExecutable = (dir: string): string | null => {
@@ -1440,15 +1486,49 @@ export default class SyncthingLauncher extends Plugin {
 			// Copy the executable
 			fs.copyFileSync(executablePath, finalPath);
 			
-			// Make executable on Unix systems
+			// Make executable on Unix systems and handle macOS security
 			if (process.platform !== 'win32') {
 				fs.chmodSync(finalPath, '755');
+				
+				// On macOS, remove quarantine attributes to allow execution
+				if (process.platform === 'darwin') {
+					try {
+						await new Promise<void>((resolve, reject) => {
+							exec(`xattr -d com.apple.quarantine "${finalPath}"`, (error: any) => {
+								// Don't reject if the attribute doesn't exist
+								if (error && !error.message.includes('No such xattr')) {
+									console.log('Note: Could not remove quarantine attribute:', error.message);
+								} else {
+									console.log('Removed macOS quarantine attribute from executable');
+								}
+								resolve();
+							});
+						});
+					} catch (error) {
+						console.log('Note: Could not remove quarantine attribute (non-fatal):', error);
+					}
+				}
 			}
 
 			// Clean up extracted directory structure, keep only our renamed executable
 			this.cleanupExtractedFiles(extractDir, path.basename(finalPath));
 
 			console.log(`Syncthing executable installed to: ${finalPath}`);
+			
+			// Verify the executable is actually executable
+			try {
+				const stats = fs.statSync(finalPath);
+				const mode = stats.mode;
+				console.log(`Executable permissions: ${(mode & parseInt('777', 8)).toString(8)}`);
+				
+				// Test if we can access the file for execution
+				fs.accessSync(finalPath, fs.constants.F_OK | fs.constants.X_OK);
+				console.log('✅ Executable permissions verified');
+			} catch (permError) {
+				console.error('❌ Executable permissions issue:', permError);
+				throw new Error(`Executable not accessible: ${permError.message}`);
+			}
+
 			return true;
 
 		} catch (error) {
@@ -1783,6 +1863,54 @@ class SettingTab extends PluginSettingTab {
 						new Notice('✅ Syncthing executable found and accessible');
 					} else {
 						new Notice('❌ Syncthing executable not found');
+					}
+				}));
+
+		new Setting(binarySection)
+			.setName('Re-download Executable')
+			.setDesc('Force re-download the Syncthing executable (useful if you encounter permission or execution issues)')
+			.addButton(button => button
+				.setButtonText('Re-download')
+				.setTooltip('Force re-download Syncthing binary')
+				.onClick(async () => {
+					try {
+						// First, try to remove existing executable
+						const executablePath = this.plugin.getSyncthingExecutablePath();
+						if (typeof require !== 'undefined') {
+							const fs = require('fs');
+							const path = require('path');
+							
+							try {
+								// Remove the entire syncthing directory to force clean download
+								const syncthingDir = path.dirname(executablePath);
+								if (fs.existsSync(syncthingDir)) {
+									fs.rmSync(syncthingDir, { recursive: true, force: true });
+									console.log('Removed existing Syncthing directory for clean re-download');
+								}
+							} catch (removeError) {
+								console.log('Could not remove existing executable (non-fatal):', removeError);
+							}
+						}
+						
+						new Notice('Starting forced re-download of Syncthing executable...', 5000);
+						const success = await this.plugin.downloadSyncthingExecutable();
+						if (success) {
+							new Notice('✅ Syncthing executable re-downloaded successfully!');
+							
+							// Verify it's working
+							setTimeout(async () => {
+								const isExecutable = await this.plugin.checkExecutableExists();
+								if (isExecutable) {
+									new Notice('✅ Executable verified and ready to use!');
+								} else {
+									new Notice('⚠️ Re-downloaded executable may still have issues. Check console for details.');
+								}
+							}, 1000);
+						} else {
+							new Notice('❌ Failed to re-download Syncthing executable');
+						}
+					} catch (error) {
+						new Notice(`Re-download failed: ${error.message}`);
 					}
 				}));
 
