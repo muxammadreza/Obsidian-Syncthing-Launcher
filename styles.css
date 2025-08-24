@@ -7,14 +7,443 @@ If your plugin does not need CSS, delete this file.
 
 */
 
-
-.mouse-pointer
-{
+/* Legacy styles */
+.mouse-pointer {
     cursor: pointer;
 }
 
-.status-icon
-{
+/* Status bar item styles */
+.status-icon {
     margin-left: 8px;
     margin-right: -4px !important;
+}
+
+/* Modern Syncthing Settings Interface */
+.syncthing-settings {
+    max-width: 800px;
+    margin: 0 auto;
+    font-family: var(--font-interface);
+}
+
+/* Tab Navigation */
+.syncthing-tabs {
+    display: flex;
+    border-bottom: 2px solid var(--background-modifier-border);
+    margin-bottom: 24px;
+    background: var(--background-primary);
+    border-radius: 8px 8px 0 0;
+    overflow: hidden;
+}
+
+.syncthing-tab {
+    flex: 1;
+    padding: 12px 20px;
+    background: var(--background-secondary);
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    position: relative;
+}
+
+.syncthing-tab:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.syncthing-tab.active {
+    background: var(--background-primary);
+    color: var(--text-accent);
+    border-bottom: 2px solid var(--interactive-accent);
+}
+
+.syncthing-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -2px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--interactive-accent);
+}
+
+/* Tab Content */
+.syncthing-tab-content {
+    display: none;
+    animation: fadeIn 0.3s ease;
+}
+
+.syncthing-tab-content.active {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Status Section */
+.syncthing-status-card {
+    background: var(--background-secondary);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 24px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.syncthing-status-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+
+.syncthing-status-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-normal);
+    margin: 0;
+}
+
+.syncthing-status-indicator {
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.syncthing-status-indicator.running {
+    background: var(--color-green);
+    color: white;
+}
+
+.syncthing-status-indicator.stopped {
+    background: var(--color-red);
+    color: white;
+}
+
+.syncthing-status-indicator.unknown {
+    background: var(--color-orange);
+    color: white;
+}
+
+.syncthing-status-info {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+}
+
+.syncthing-info-item {
+    background: var(--background-primary);
+    padding: 12px;
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.syncthing-info-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.syncthing-info-value {
+    font-size: 14px;
+    color: var(--text-normal);
+    font-weight: 500;
+}
+
+/* Control Buttons */
+.syncthing-controls {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.syncthing-btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.syncthing-btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.syncthing-btn.primary {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.syncthing-btn.success {
+    background: var(--color-green);
+    color: white;
+}
+
+.syncthing-btn.danger {
+    background: var(--color-red);
+    color: white;
+}
+
+.syncthing-btn.secondary {
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.syncthing-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+/* Form Sections */
+.syncthing-section {
+    background: var(--background-secondary);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.syncthing-section-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-normal);
+    margin: 0 0 16px 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.syncthing-section-description {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+    line-height: 1.5;
+}
+
+/* Form Controls */
+.syncthing-form-group {
+    margin-bottom: 20px;
+}
+
+.syncthing-form-group:last-child {
+    margin-bottom: 0;
+}
+
+.syncthing-label {
+    display: block;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-normal);
+    margin-bottom: 6px;
+}
+
+.syncthing-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-size: 14px;
+    transition: border-color 0.2s ease;
+}
+
+.syncthing-input:focus {
+    outline: none;
+    border-color: var(--interactive-accent);
+    box-shadow: 0 0 0 2px rgba(var(--interactive-accent-rgb), 0.2);
+}
+
+.syncthing-textarea {
+    min-height: 80px;
+    resize: vertical;
+}
+
+.syncthing-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.syncthing-checkbox input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+}
+
+.syncthing-help-text {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 6px;
+    line-height: 1.4;
+}
+
+/* Diagnostic Section */
+.syncthing-diagnostic {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 16px;
+    margin: 16px 0;
+}
+
+.syncthing-diagnostic-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-normal);
+    margin-bottom: 12px;
+}
+
+.syncthing-diagnostic-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.syncthing-diagnostic-item:last-child {
+    border-bottom: none;
+}
+
+.syncthing-diagnostic-label {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.syncthing-diagnostic-value {
+    font-size: 13px;
+    color: var(--text-normal);
+    font-family: var(--font-monospace);
+}
+
+/* About Section */
+.syncthing-about {
+    text-align: center;
+    padding: 40px 20px;
+}
+
+.syncthing-logo {
+    font-size: 36px;
+    margin-bottom: 16px;
+}
+
+.syncthing-about-title {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--text-normal);
+    margin-bottom: 8px;
+}
+
+.syncthing-about-version {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+}
+
+.syncthing-about-description {
+    font-size: 14px;
+    color: var(--text-normal);
+    line-height: 1.6;
+    max-width: 500px;
+    margin: 0 auto 24px;
+}
+
+.syncthing-links {
+    display: flex;
+    justify-content: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.syncthing-link {
+    color: var(--text-accent);
+    text-decoration: none;
+    font-size: 14px;
+    font-weight: 500;
+    transition: opacity 0.2s ease;
+}
+
+.syncthing-link:hover {
+    opacity: 0.8;
+}
+
+/* Alert Messages */
+.syncthing-alert {
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 16px 0;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.syncthing-alert.info {
+    background: rgba(var(--color-blue-rgb), 0.1);
+    border: 1px solid var(--color-blue);
+    color: var(--color-blue);
+}
+
+.syncthing-alert.warning {
+    background: rgba(var(--color-orange-rgb), 0.1);
+    border: 1px solid var(--color-orange);
+    color: var(--color-orange);
+}
+
+.syncthing-alert.success {
+    background: rgba(var(--color-green-rgb), 0.1);
+    border: 1px solid var(--color-green);
+    color: var(--color-green);
+}
+
+.syncthing-alert.error {
+    background: rgba(var(--color-red-rgb), 0.1);
+    border: 1px solid var(--color-red);
+    color: var(--color-red);
+}
+
+/* Mobile Responsive */
+@media (max-width: 600px) {
+    .syncthing-tabs {
+        flex-direction: column;
+    }
+    
+    .syncthing-tab {
+        text-align: center;
+        border-bottom: 1px solid var(--background-modifier-border);
+    }
+    
+    .syncthing-tab.active::after {
+        display: none;
+    }
+    
+    .syncthing-controls {
+        justify-content: center;
+    }
+    
+    .syncthing-btn {
+        flex: 1;
+        min-width: 120px;
+    }
+    
+    .syncthing-status-info {
+        grid-template-columns: 1fr;
+    }
 }

@@ -1597,208 +1597,373 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
 var SettingTab = class extends import_obsidian.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
+    this.activeTab = "overview";
+    this.refreshInterval = null;
     this.plugin = plugin;
   }
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    const statusSection = containerEl.createDiv();
-    statusSection.createEl("h2", { text: "Syncthing Control Panel" });
-    const statusSetting = new import_obsidian.Setting(statusSection).setName("Syncthing Status").setDesc("Current status of Syncthing service");
-    const statusButton = statusSetting.addButton((button) => button.setButtonText("Check Status").setTooltip("Check if Syncthing is running").onClick(async () => {
-      const isRunning = await this.plugin.isSyncthingRunning();
-      const status = isRunning ? "\u2705 Running" : "\u274C Not running";
-      new import_obsidian.Notice(`Syncthing status: ${status}`);
-      statusIndicator.setText(status);
-    }));
-    const statusIndicator = statusSetting.settingEl.createSpan();
-    statusIndicator.style.marginLeft = "10px";
-    statusIndicator.style.fontWeight = "bold";
-    statusIndicator.setText("\u2753 Unknown");
-    setTimeout(async () => {
-      try {
-        const isRunning = await this.plugin.isSyncthingRunning();
-        statusIndicator.setText(isRunning ? "\u2705 Running" : "\u274C Not running");
-      } catch (error) {
-        statusIndicator.setText("\u274C Error checking status");
-      }
-    }, 500);
-    const updateStatusFromMonitor = (data) => {
-      let statusText = "\u2753 Unknown";
-      if (data.status === "Invalid API key") {
-        statusText = "\u274C Invalid API key";
-      } else if (data.status === "API key not set") {
-        statusText = "\u274C API key not set";
-      } else if (data.connectedDevicesCount === 0) {
-        statusText = "\u{1F534} No devices connected";
-      } else if (data.status === "scanning") {
-        statusText = "\u{1F7E1} Scanning";
-      } else if (data.fileCompletion !== void 0 && data.fileCompletion < 100) {
-        statusText = `\u{1F7E1} Syncing (${data.fileCompletion.toFixed(1)}%)`;
-      } else {
-        statusText = "\u{1F7E2} Connected";
-      }
-      statusIndicator.setText(statusText);
-    };
-    this.plugin.monitor.on("status-update", updateStatusFromMonitor);
-    new import_obsidian.Setting(statusSection).setName("Start Syncthing").setDesc("Start the Syncthing service").addButton((button) => button.setButtonText("Start").setTooltip("Start Syncthing service").onClick(async () => {
+    containerEl.createDiv("syncthing-settings", (settingsEl) => {
+      const tabsEl = settingsEl.createDiv("syncthing-tabs");
+      const tabs = [
+        { id: "overview", label: "Overview", icon: "\u{1F4CA}" },
+        { id: "configuration", label: "Configuration", icon: "\u2699\uFE0F" },
+        { id: "advanced", label: "Advanced", icon: "\u{1F527}" },
+        { id: "about", label: "About", icon: "\u2139\uFE0F" }
+      ];
+      tabs.forEach((tab) => {
+        const tabEl = tabsEl.createEl("button", {
+          cls: `syncthing-tab ${this.activeTab === tab.id ? "active" : ""}`,
+          text: `${tab.icon} ${tab.label}`
+        });
+        tabEl.addEventListener("click", () => {
+          this.activeTab = tab.id;
+          this.display();
+        });
+      });
+      this.renderTabContent(settingsEl);
+    });
+    if (this.activeTab === "overview") {
+      this.startAutoRefresh();
+    }
+  }
+  renderTabContent(container) {
+    const contentEl = container.createDiv("syncthing-tab-content active");
+    switch (this.activeTab) {
+      case "overview":
+        this.renderOverviewTab(contentEl);
+        break;
+      case "configuration":
+        this.renderConfigurationTab(contentEl);
+        break;
+      case "advanced":
+        this.renderAdvancedTab(contentEl);
+        break;
+      case "about":
+        this.renderAboutTab(contentEl);
+        break;
+    }
+  }
+  renderOverviewTab(container) {
+    const statusCard = container.createDiv("syncthing-status-card");
+    const statusHeader = statusCard.createDiv("syncthing-status-header");
+    statusHeader.createEl("h2", { cls: "syncthing-status-title", text: "Syncthing Status" });
+    const statusIndicator = statusHeader.createSpan("syncthing-status-indicator unknown");
+    statusIndicator.textContent = "Checking...";
+    const statusInfo = statusCard.createDiv("syncthing-status-info");
+    const executableItem = statusInfo.createDiv("syncthing-info-item");
+    executableItem.createDiv({ cls: "syncthing-info-label", text: "Executable" });
+    const executableValue = executableItem.createDiv("syncthing-info-value");
+    this.plugin.checkExecutableExists().then((exists) => {
+      executableValue.textContent = exists ? "Found" : "Not found";
+    });
+    const configItem = statusInfo.createDiv("syncthing-info-item");
+    configItem.createDiv({ cls: "syncthing-info-label", text: "Config" });
+    const configValue = configItem.createDiv("syncthing-info-value");
+    configValue.textContent = this.plugin.settings.syncthingApiKey ? "Configured" : "Not configured";
+    const modeItem = statusInfo.createDiv("syncthing-info-item");
+    modeItem.createDiv({ cls: "syncthing-info-label", text: "Mode" });
+    const modeValue = modeItem.createDiv("syncthing-info-value");
+    modeValue.textContent = this.plugin.settings.mobileMode ? "Mobile" : "Desktop";
+    const urlItem = statusInfo.createDiv("syncthing-info-item");
+    urlItem.createDiv({ cls: "syncthing-info-label", text: "URL" });
+    const urlValue = urlItem.createDiv("syncthing-info-value");
+    urlValue.textContent = this.plugin.getSyncthingURL();
+    const controls = statusCard.createDiv("syncthing-controls");
+    const startBtn = controls.createEl("button", {
+      cls: "syncthing-btn success",
+      text: "\u{1F680} Start"
+    });
+    startBtn.addEventListener("click", async () => {
       try {
         await this.plugin.startSyncthing();
-        new import_obsidian.Notice("Syncthing started successfully!");
-        setTimeout(async () => {
-          const isRunning = await this.plugin.isSyncthingRunning();
-          statusIndicator.setText(isRunning ? "\u2705 Running" : "\u274C Not running");
-        }, 2e3);
+        new import_obsidian.Notice("Syncthing started successfully");
+        this.updateStatus();
       } catch (error) {
         new import_obsidian.Notice(`Failed to start Syncthing: ${error.message}`);
       }
-    }));
-    new import_obsidian.Setting(statusSection).setName("Stop Syncthing").setDesc("Stop the Syncthing service").addButton((button) => button.setButtonText("Stop").setTooltip("Stop Syncthing service").onClick(async () => {
+    });
+    const stopBtn = controls.createEl("button", {
+      cls: "syncthing-btn danger",
+      text: "\u23F9\uFE0F Stop"
+    });
+    stopBtn.addEventListener("click", async () => {
       try {
         await this.plugin.stopSyncthing();
-        new import_obsidian.Notice("Syncthing stopped successfully!");
-        statusIndicator.setText("\u274C Not running");
+        new import_obsidian.Notice("Syncthing stopped");
+        this.updateStatus();
       } catch (error) {
         new import_obsidian.Notice(`Failed to stop Syncthing: ${error.message}`);
       }
-    }));
-    new import_obsidian.Setting(statusSection).setName("Restart Syncthing").setDesc("Restart the Syncthing service").addButton((button) => button.setButtonText("Restart").setTooltip("Restart Syncthing service").onClick(async () => {
+    });
+    const restartBtn = controls.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u{1F504} Restart"
+    });
+    restartBtn.addEventListener("click", async () => {
       try {
         await this.plugin.stopSyncthing();
         await new Promise((resolve) => setTimeout(resolve, 1e3));
         await this.plugin.startSyncthing();
-        new import_obsidian.Notice("Syncthing restarted successfully!");
-        setTimeout(async () => {
-          const isRunning = await this.plugin.isSyncthingRunning();
-          statusIndicator.setText(isRunning ? "\u2705 Running" : "\u274C Not running");
-        }, 2e3);
+        new import_obsidian.Notice("Syncthing restarted");
+        this.updateStatus();
       } catch (error) {
         new import_obsidian.Notice(`Failed to restart Syncthing: ${error.message}`);
       }
-    }));
-    new import_obsidian.Setting(statusSection).setName("Pause Syncthing").setDesc("Pause synchronization (keeps Syncthing running but stops syncing)").addButton((button) => button.setButtonText("Pause").setTooltip("Pause synchronization").onClick(async () => {
+    });
+    const openBtn = controls.createEl("button", {
+      cls: "syncthing-btn primary",
+      text: "\u{1F310} Open GUI"
+    });
+    openBtn.addEventListener("click", () => {
+      const url = this.plugin.getSyncthingURL();
+      window.open(url, "_blank");
+    });
+    const updateStatusFromMonitor = (data) => {
+      let statusText = "\u2753 Unknown";
+      let statusClass = "unknown";
+      if (data.status === "Invalid API key") {
+        statusText = "Invalid API key";
+        statusClass = "stopped";
+      } else if (data.status === "API key not set") {
+        statusText = "API key not set";
+        statusClass = "stopped";
+      } else if (data.connectedDevicesCount === 0) {
+        statusText = "No devices connected";
+        statusClass = "stopped";
+      } else if (data.status === "scanning") {
+        statusText = "Scanning";
+        statusClass = "running";
+      } else if (data.fileCompletion !== void 0 && data.fileCompletion < 100) {
+        statusText = `Syncing (${data.fileCompletion.toFixed(1)}%)`;
+        statusClass = "running";
+      } else {
+        statusText = "Connected";
+        statusClass = "running";
+      }
+      statusIndicator.className = `syncthing-status-indicator ${statusClass}`;
+      statusIndicator.textContent = statusText;
+    };
+    this.plugin.monitor.on("status-update", updateStatusFromMonitor);
+    this.updateStatus();
+  }
+  renderConfigurationTab(container) {
+    const apiSection = container.createDiv("syncthing-section");
+    apiSection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F517} API Configuration" });
+    apiSection.createDiv({
+      cls: "syncthing-section-description",
+      text: "Configure connection to Syncthing API. Find these settings in Syncthing GUI \u2192 Actions \u2192 Settings."
+    });
+    const apiKeyGroup = apiSection.createDiv("syncthing-form-group");
+    apiKeyGroup.createEl("label", { cls: "syncthing-label", text: "API Key" });
+    const apiKeyInput = apiKeyGroup.createEl("input", {
+      cls: "syncthing-input",
+      attr: { type: "password", value: this.plugin.settings.syncthingApiKey, placeholder: "Enter Syncthing API key" }
+    });
+    apiKeyGroup.createDiv({
+      cls: "syncthing-help-text",
+      text: "API key for authentication (found in Syncthing GUI \u2192 Settings \u2192 GUI)"
+    });
+    const folderIdGroup = apiSection.createDiv("syncthing-form-group");
+    folderIdGroup.createEl("label", { cls: "syncthing-label", text: "Vault Folder ID" });
+    const folderIdInput = folderIdGroup.createEl("input", {
+      cls: "syncthing-input",
+      attr: { type: "text", value: this.plugin.settings.vaultFolderID, placeholder: "Enter vault folder ID" }
+    });
+    folderIdGroup.createDiv({
+      cls: "syncthing-help-text",
+      text: "ID of the folder containing your vault (found in Syncthing GUI \u2192 Folders)"
+    });
+    const modeSection = container.createDiv("syncthing-section");
+    modeSection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F4F1} Connection Mode" });
+    modeSection.createDiv({
+      cls: "syncthing-section-description",
+      text: "Choose how to connect to Syncthing: run locally, connect to remote instance, or use Docker."
+    });
+    const mobileGroup = modeSection.createDiv("syncthing-form-group");
+    const mobileCheckbox = mobileGroup.createEl("label", { cls: "syncthing-checkbox" });
+    const mobileInput = mobileCheckbox.createEl("input", { attr: { type: "checkbox" } });
+    mobileInput.checked = this.plugin.settings.mobileMode;
+    mobileCheckbox.createSpan({ text: "Mobile Mode (connect to remote Syncthing)" });
+    const dockerGroup = modeSection.createDiv("syncthing-form-group");
+    const dockerCheckbox = dockerGroup.createEl("label", { cls: "syncthing-checkbox" });
+    const dockerInput = dockerCheckbox.createEl("input", { attr: { type: "checkbox" } });
+    dockerInput.checked = this.plugin.settings.useDocker;
+    dockerCheckbox.createSpan({ text: "Use Docker (run Syncthing in container)" });
+    const remoteUrlGroup = modeSection.createDiv("syncthing-form-group");
+    remoteUrlGroup.createEl("label", { cls: "syncthing-label", text: "Remote Syncthing URL" });
+    const remoteUrlInput = remoteUrlGroup.createEl("input", {
+      cls: "syncthing-input",
+      attr: { type: "text", value: this.plugin.settings.remoteUrl, placeholder: "http://192.168.1.100:8384" }
+    });
+    remoteUrlGroup.createDiv({
+      cls: "syncthing-help-text",
+      text: "URL of remote Syncthing instance (used in mobile mode)"
+    });
+    const startupSection = container.createDiv("syncthing-section");
+    startupSection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F680} Startup Configuration" });
+    startupSection.createDiv({
+      cls: "syncthing-section-description",
+      text: "Control when Syncthing starts and stops with Obsidian."
+    });
+    const autoStartGroup = startupSection.createDiv("syncthing-form-group");
+    const autoStartCheckbox = autoStartGroup.createEl("label", { cls: "syncthing-checkbox" });
+    const autoStartInput = autoStartCheckbox.createEl("input", { attr: { type: "checkbox" } });
+    autoStartInput.checked = this.plugin.settings.startOnObsidianOpen;
+    autoStartCheckbox.createSpan({ text: "Start Syncthing when Obsidian opens" });
+    const autoStopGroup = startupSection.createDiv("syncthing-form-group");
+    const autoStopCheckbox = autoStopGroup.createEl("label", { cls: "syncthing-checkbox" });
+    const autoStopInput = autoStopCheckbox.createEl("input", { attr: { type: "checkbox" } });
+    autoStopInput.checked = this.plugin.settings.stopOnObsidianClose;
+    autoStopCheckbox.createSpan({ text: "Stop Syncthing when Obsidian closes" });
+    const saveBtn = container.createEl("button", {
+      cls: "syncthing-btn primary",
+      text: "\u{1F4BE} Save Configuration"
+    });
+    saveBtn.addEventListener("click", async () => {
+      this.plugin.settings.syncthingApiKey = apiKeyInput.value;
+      this.plugin.settings.vaultFolderID = folderIdInput.value;
+      this.plugin.settings.mobileMode = mobileInput.checked;
+      this.plugin.settings.useDocker = dockerInput.checked;
+      this.plugin.settings.remoteUrl = remoteUrlInput.value;
+      this.plugin.settings.startOnObsidianOpen = autoStartInput.checked;
+      this.plugin.settings.stopOnObsidianClose = autoStopInput.checked;
+      await this.plugin.saveSettings();
+      new import_obsidian.Notice("Settings saved successfully");
+    });
+  }
+  renderAdvancedTab(container) {
+    const binarySection = container.createDiv("syncthing-section");
+    binarySection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F4E6} Binary Management" });
+    binarySection.createDiv({
+      cls: "syncthing-section-description",
+      text: "Download, verify, and manage the Syncthing executable."
+    });
+    const binaryDiagnostic = binarySection.createDiv("syncthing-diagnostic");
+    binaryDiagnostic.createDiv({ cls: "syncthing-diagnostic-title", text: "Executable Status" });
+    const pathItem = binaryDiagnostic.createDiv("syncthing-diagnostic-item");
+    pathItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Path:" });
+    pathItem.createSpan({
+      cls: "syncthing-diagnostic-value",
+      text: this.plugin.getSyncthingExecutablePath()
+    });
+    const statusItem = binaryDiagnostic.createDiv("syncthing-diagnostic-item");
+    statusItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Status:" });
+    const statusValue = statusItem.createSpan({ cls: "syncthing-diagnostic-value" });
+    this.plugin.checkExecutableExists().then((exists) => {
+      statusValue.textContent = exists ? "Found" : "Not found";
+    });
+    const binaryControls = binarySection.createDiv("syncthing-controls");
+    const downloadBtn = binaryControls.createEl("button", {
+      cls: "syncthing-btn primary",
+      text: "\u2B07\uFE0F Download"
+    });
+    downloadBtn.addEventListener("click", async () => {
+      downloadBtn.disabled = true;
+      downloadBtn.textContent = "\u23F3 Downloading...";
       try {
-        const success = await this.plugin.pauseSyncthing();
+        const success = await this.plugin.downloadSyncthingExecutable();
         if (success) {
-          new import_obsidian.Notice("Syncthing paused successfully!");
+          new import_obsidian.Notice("\u2705 Syncthing downloaded successfully");
+          this.renderAdvancedTab(container);
         } else {
-          new import_obsidian.Notice("Failed to pause Syncthing");
+          new import_obsidian.Notice("\u274C Download failed");
         }
       } catch (error) {
-        new import_obsidian.Notice(`Failed to pause Syncthing: ${error.message}`);
+        new import_obsidian.Notice(`Download failed: ${error.message}`);
+      } finally {
+        downloadBtn.disabled = false;
+        downloadBtn.textContent = "\u2B07\uFE0F Download";
       }
-    }));
-    new import_obsidian.Setting(statusSection).setName("Resume Syncthing").setDesc("Resume synchronization after pausing").addButton((button) => button.setButtonText("Resume").setTooltip("Resume synchronization").onClick(async () => {
+    });
+    const redownloadBtn = binaryControls.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u{1F504} Re-download"
+    });
+    redownloadBtn.addEventListener("click", async () => {
+      redownloadBtn.disabled = true;
+      redownloadBtn.textContent = "\u23F3 Re-downloading...";
       try {
-        const success = await this.plugin.resumeSyncthing();
+        const executablePath = this.plugin.getSyncthingExecutablePath();
+        if (typeof require !== "undefined") {
+          const fs = require("fs");
+          const path = require("path");
+          try {
+            const syncthingDir = path.dirname(executablePath);
+            if (fs.existsSync(syncthingDir)) {
+              fs.rmSync(syncthingDir, { recursive: true, force: true });
+            }
+          } catch (removeError) {
+            console.log("Could not remove existing executable:", removeError);
+          }
+        }
+        const success = await this.plugin.downloadSyncthingExecutable();
         if (success) {
-          new import_obsidian.Notice("Syncthing resumed successfully!");
+          new import_obsidian.Notice("\u2705 Syncthing re-downloaded successfully");
+          this.renderAdvancedTab(container);
         } else {
-          new import_obsidian.Notice("Failed to resume Syncthing");
+          new import_obsidian.Notice("\u274C Re-download failed");
         }
       } catch (error) {
-        new import_obsidian.Notice(`Failed to resume Syncthing: ${error.message}`);
+        new import_obsidian.Notice(`Re-download failed: ${error.message}`);
+      } finally {
+        redownloadBtn.disabled = false;
+        redownloadBtn.textContent = "\u{1F504} Re-download";
       }
-    }));
-    const binarySection = containerEl.createDiv();
-    binarySection.createEl("h2", { text: "Binary Management" });
-    new import_obsidian.Setting(binarySection).setName("Check Executable").setDesc("Check if Syncthing executable exists and is accessible").addButton((button) => button.setButtonText("Check").setTooltip("Verify Syncthing executable").onClick(async () => {
+    });
+    const checkBtn = binaryControls.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u2705 Check"
+    });
+    checkBtn.addEventListener("click", async () => {
       const exists = await this.plugin.checkExecutableExists();
       if (exists) {
         new import_obsidian.Notice("\u2705 Syncthing executable found and accessible");
       } else {
         new import_obsidian.Notice("\u274C Syncthing executable not found");
       }
-    }));
-    new import_obsidian.Setting(binarySection).setName("Force Re-download and Test").setDesc("Force re-download the Syncthing executable and run a comprehensive test (useful for troubleshooting)").addButton((button) => button.setButtonText("Re-download & Test").setTooltip("Force re-download and test Syncthing binary thoroughly").onClick(async () => {
+    });
+    const controlSection = container.createDiv("syncthing-section");
+    controlSection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F39B}\uFE0F Control Actions" });
+    const controlActions = controlSection.createDiv("syncthing-controls");
+    const pauseBtn = controlActions.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u23F8\uFE0F Pause Sync"
+    });
+    pauseBtn.addEventListener("click", async () => {
       try {
-        await this.plugin.stopSyncthing();
-        await new Promise((resolve) => setTimeout(resolve, 1e3));
-        const executablePath = this.plugin.getSyncthingExecutablePath();
-        if (typeof require !== "undefined") {
-          const fs = require("fs");
-          const path = require("path");
-          try {
-            const syncthingDir = path.dirname(executablePath);
-            if (fs.existsSync(syncthingDir)) {
-              fs.rmSync(syncthingDir, { recursive: true, force: true });
-              console.log("Removed existing Syncthing directory for clean re-download");
-            }
-          } catch (removeError) {
-            console.log("Could not remove existing executable (non-fatal):", removeError);
-          }
-        }
-        new import_obsidian.Notice("Starting comprehensive re-download and test...", 5e3);
-        const success = await this.plugin.downloadSyncthingExecutable();
+        const success = await this.plugin.pauseSyncthing();
         if (success) {
-          new import_obsidian.Notice("\u2705 Download successful! Running tests...", 3e3);
-          setTimeout(async () => {
-            const isExecutable = await this.plugin.checkExecutableExists();
-            if (isExecutable) {
-              new import_obsidian.Notice("\u2705 All tests passed! Syncthing is ready to use.", 5e3);
-            } else {
-              new import_obsidian.Notice("\u274C Tests failed. Check console for detailed logs.", 8e3);
-            }
-          }, 1e3);
+          new import_obsidian.Notice("Syncthing paused successfully");
         } else {
-          new import_obsidian.Notice("\u274C Re-download failed. Check console for details.", 8e3);
+          new import_obsidian.Notice("Failed to pause Syncthing");
         }
       } catch (error) {
-        new import_obsidian.Notice(`Test failed: ${error.message}`, 8e3);
+        new import_obsidian.Notice(`Failed to pause Syncthing: ${error.message}`);
       }
-    }));
-    new import_obsidian.Setting(binarySection).setName("Re-download Executable").setDesc("Force re-download the Syncthing executable (useful if you encounter permission or execution issues)").addButton((button) => button.setButtonText("Re-download").setTooltip("Force re-download Syncthing binary").onClick(async () => {
+    });
+    const resumeBtn = controlActions.createEl("button", {
+      cls: "syncthing-btn success",
+      text: "\u25B6\uFE0F Resume Sync"
+    });
+    resumeBtn.addEventListener("click", async () => {
       try {
-        const executablePath = this.plugin.getSyncthingExecutablePath();
-        if (typeof require !== "undefined") {
-          const fs = require("fs");
-          const path = require("path");
-          try {
-            const syncthingDir = path.dirname(executablePath);
-            if (fs.existsSync(syncthingDir)) {
-              fs.rmSync(syncthingDir, { recursive: true, force: true });
-              console.log("Removed existing Syncthing directory for clean re-download");
-            }
-          } catch (removeError) {
-            console.log("Could not remove existing executable (non-fatal):", removeError);
-          }
-        }
-        new import_obsidian.Notice("Starting forced re-download of Syncthing executable...", 5e3);
-        const success = await this.plugin.downloadSyncthingExecutable();
+        const success = await this.plugin.resumeSyncthing();
         if (success) {
-          new import_obsidian.Notice("\u2705 Syncthing executable re-downloaded successfully!");
-          setTimeout(async () => {
-            const isExecutable = await this.plugin.checkExecutableExists();
-            if (isExecutable) {
-              new import_obsidian.Notice("\u2705 Executable verified and ready to use!");
-            } else {
-              new import_obsidian.Notice("\u26A0\uFE0F Re-downloaded executable may still have issues. Check console for details.");
-            }
-          }, 1e3);
+          new import_obsidian.Notice("Syncthing resumed successfully");
         } else {
-          new import_obsidian.Notice("\u274C Failed to re-download Syncthing executable");
+          new import_obsidian.Notice("Failed to resume Syncthing");
         }
       } catch (error) {
-        new import_obsidian.Notice(`Re-download failed: ${error.message}`);
+        new import_obsidian.Notice(`Failed to resume Syncthing: ${error.message}`);
       }
-    }));
-    new import_obsidian.Setting(binarySection).setName("Download Executable").setDesc("Download the Syncthing executable for your platform").addButton((button) => button.setButtonText("Download").setTooltip("Download Syncthing binary").onClick(async () => {
-      try {
-        const success = await this.plugin.downloadSyncthingExecutable();
-        if (success) {
-          new import_obsidian.Notice("\u2705 Syncthing executable downloaded successfully!");
-        } else {
-          new import_obsidian.Notice("\u274C Failed to download Syncthing executable");
-        }
-      } catch (error) {
-        new import_obsidian.Notice(`Download failed: ${error.message}`);
-      }
-    }));
-    new import_obsidian.Setting(binarySection).setName("Open Syncthing GUI").setDesc("Open Syncthing web interface in browser").addButton((button) => button.setButtonText("Open GUI").setTooltip("Open Syncthing web interface").onClick(async () => {
-      const url = this.plugin.getSyncthingURL();
-      window.open(url, "_blank");
-    }));
-    new import_obsidian.Setting(binarySection).setName("Reset Configuration").setDesc("Reset Syncthing configuration (useful for first-time setup or fixing login issues)").addButton((button) => button.setButtonText("Reset Config").setTooltip("Delete Syncthing configuration to start fresh").onClick(async () => {
+    });
+    const resetBtn = controlActions.createEl("button", {
+      cls: "syncthing-btn danger",
+      text: "\u{1F504} Reset Config"
+    });
+    resetBtn.addEventListener("click", async () => {
       try {
         await this.plugin.stopSyncthing();
         await new Promise((resolve) => setTimeout(resolve, 1e3));
@@ -1808,44 +1973,146 @@ var SettingTab = class extends import_obsidian.PluginSettingTab {
           const configDir = `${this.plugin.getPluginAbsolutePath()}syncthing-config`;
           if (fs.existsSync(configDir)) {
             fs.rmSync(configDir, { recursive: true, force: true });
-            new import_obsidian.Notice("Syncthing configuration reset successfully! Start Syncthing to begin initial setup.");
+            new import_obsidian.Notice("Syncthing configuration reset successfully");
           } else {
-            new import_obsidian.Notice("No configuration found to reset.");
+            new import_obsidian.Notice("No configuration found to reset");
           }
         }
       } catch (error) {
         new import_obsidian.Notice(`Failed to reset configuration: ${error.message}`);
       }
-    }));
-    const configSection = containerEl.createDiv();
-    configSection.createEl("h2", { text: "Configuration" });
-    new import_obsidian.Setting(configSection).setName("Syncthing API key").setDesc("API key of Syncthing instance (in Syncthing GUI -> Actions -> Settings)").addText((text) => text.setPlaceholder("Enter Syncthing API key").setValue(this.plugin.settings.syncthingApiKey).onChange(async (value) => {
-      this.plugin.settings.syncthingApiKey = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(configSection).setName("Vault folder ID").setDesc("ID of the folder in which the vault is stored (in Syncthing GUI -> Folders -> Vault folder)").addText((text) => text.setPlaceholder("Enter vault folder ID").setValue(this.plugin.settings.vaultFolderID).onChange(async (value) => {
-      this.plugin.settings.vaultFolderID = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(configSection).setName("Start on Obsidian open").setDesc("Start Syncthing when Obsidian opens").addToggle((toggle) => toggle.setValue(this.plugin.settings.startOnObsidianOpen).onChange(async (value) => {
-      this.plugin.settings.startOnObsidianOpen = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(configSection).setName("Stop on Obsidian close").setDesc("Stop Syncthing when Obsidian closes").addToggle((toggle) => toggle.setValue(this.plugin.settings.stopOnObsidianClose).onChange(async (value) => {
-      this.plugin.settings.stopOnObsidianClose = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(configSection).setName("Mobile Mode").setDesc("Enable mobile mode to connect to remote Syncthing instead of running locally (auto-detected)").addToggle((toggle) => toggle.setValue(this.plugin.settings.mobileMode).onChange(async (value) => {
-      this.plugin.settings.mobileMode = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(configSection).setName("Remote Syncthing URL").setDesc("URL of remote Syncthing instance (used in mobile mode or when connecting to remote server)").addText((text) => text.setPlaceholder("http://192.168.1.100:8384").setValue(this.plugin.settings.remoteUrl).onChange(async (value) => {
-      this.plugin.settings.remoteUrl = value;
-      await this.plugin.saveSettings();
-    }));
-    new import_obsidian.Setting(configSection).setName("Use Docker").setDesc("Run Syncthing in Docker container instead of running it locally (desktop only)").addToggle((toggle) => toggle.setValue(this.plugin.settings.useDocker).onChange(async (value) => {
-      this.plugin.settings.useDocker = value;
-      await this.plugin.saveSettings();
-    }));
+    });
+    const diagnosticsSection = container.createDiv("syncthing-section");
+    diagnosticsSection.createEl("h3", { cls: "syncthing-section-title", text: "\u{1F50D} System Diagnostics" });
+    const diagnostics = diagnosticsSection.createDiv("syncthing-diagnostic");
+    diagnostics.createDiv({ cls: "syncthing-diagnostic-title", text: "System Information" });
+    const platformItem = diagnostics.createDiv("syncthing-diagnostic-item");
+    platformItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Platform:" });
+    platformItem.createSpan({ cls: "syncthing-diagnostic-value", text: `${process.platform} ${process.arch}` });
+    const nodeItem = diagnostics.createDiv("syncthing-diagnostic-item");
+    nodeItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Node.js:" });
+    nodeItem.createSpan({ cls: "syncthing-diagnostic-value", text: process.version });
+    const pluginItem = diagnostics.createDiv("syncthing-diagnostic-item");
+    pluginItem.createSpan({ cls: "syncthing-diagnostic-label", text: "Plugin Version:" });
+    pluginItem.createSpan({ cls: "syncthing-diagnostic-value", text: "1.5.0" });
+    const debugControls = diagnosticsSection.createDiv("syncthing-controls");
+    const logsBtn = debugControls.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u{1F4CB} View Logs"
+    });
+    logsBtn.addEventListener("click", () => {
+      console.log("Syncthing Plugin Debug Info:", {
+        settings: this.plugin.settings,
+        executablePath: this.plugin.getSyncthingExecutablePath(),
+        platform: process.platform,
+        arch: process.arch
+      });
+      new import_obsidian.Notice("Debug info logged to console (F12)");
+    });
+    const testBtn = debugControls.createEl("button", {
+      cls: "syncthing-btn secondary",
+      text: "\u{1F9EA} Test Connection"
+    });
+    testBtn.addEventListener("click", async () => {
+      try {
+        const isRunning = await this.plugin.isSyncthingRunning();
+        if (isRunning) {
+          new import_obsidian.Notice("\u2705 Connection successful - Syncthing is running");
+        } else {
+          new import_obsidian.Notice("\u274C Connection failed - Syncthing not running");
+        }
+      } catch (error) {
+        new import_obsidian.Notice(`\u274C Connection test failed: ${error.message}`);
+      }
+    });
+  }
+  renderAboutTab(container) {
+    const aboutEl = container.createDiv("syncthing-about");
+    aboutEl.createDiv({ cls: "syncthing-logo", text: "\u{1F504}" });
+    aboutEl.createEl("h2", { cls: "syncthing-about-title", text: "Syncthing Launcher" });
+    aboutEl.createDiv({
+      cls: "syncthing-about-version",
+      text: "Version 1.5.0"
+    });
+    aboutEl.createDiv({
+      cls: "syncthing-about-description",
+      text: "This plugin provides seamless integration between Obsidian and Syncthing, enabling you to automatically sync your vault across devices with Syncthing's peer-to-peer file synchronization."
+    });
+    const linksEl = aboutEl.createDiv("syncthing-links");
+    const githubLink = linksEl.createEl("a", {
+      cls: "syncthing-link",
+      text: "\u{1F4DA} GitHub Repository",
+      href: "#"
+    });
+    githubLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      window.open("https://github.com/LBF38/obsidian-syncthing-integration", "_blank");
+    });
+    const syncthingLink = linksEl.createEl("a", {
+      cls: "syncthing-link",
+      text: "\u{1F310} Syncthing.net",
+      href: "#"
+    });
+    syncthingLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      window.open("https://syncthing.net", "_blank");
+    });
+    const docsLink = linksEl.createEl("a", {
+      cls: "syncthing-link",
+      text: "\u{1F4D6} Documentation",
+      href: "#"
+    });
+    docsLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      window.open("https://docs.syncthing.net", "_blank");
+    });
+    const featuresSection = container.createDiv("syncthing-section");
+    featuresSection.createEl("h3", { cls: "syncthing-section-title", text: "\u2728 Features" });
+    const featuresList = featuresSection.createEl("ul");
+    const features = [
+      "Automatic Syncthing download and installation",
+      "Cross-platform support (Windows, macOS, Linux)",
+      "Configurable auto-start with Obsidian",
+      "Web UI integration for advanced configuration",
+      "Real-time status monitoring",
+      "Mobile mode for remote connections",
+      "Docker support for containerized deployment"
+    ];
+    features.forEach((feature) => {
+      featuresList.createEl("li", { text: feature });
+    });
+  }
+  async updateStatus() {
+    try {
+      const isRunning = await this.plugin.isSyncthingRunning();
+      this.updateStatusDisplay(isRunning ? "running" : "stopped");
+    } catch (error) {
+      this.updateStatusDisplay("unknown");
+    }
+  }
+  updateStatusDisplay(status) {
+    const indicator = this.containerEl.querySelector(".syncthing-status-indicator");
+    if (indicator) {
+      indicator.className = `syncthing-status-indicator ${status}`;
+      indicator.textContent = status === "running" ? "Running" : status === "stopped" ? "Stopped" : "Unknown";
+    }
+  }
+  startAutoRefresh() {
+    this.stopAutoRefresh();
+    this.refreshInterval = setInterval(() => {
+      if (this.activeTab === "overview") {
+        this.updateStatus();
+      }
+    }, 1e4);
+  }
+  stopAutoRefresh() {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+      this.refreshInterval = null;
+    }
+  }
+  hide() {
+    this.stopAutoRefresh();
+    super.hide();
   }
 };
