@@ -144,7 +144,7 @@ class SyncthingMonitor extends EventEmitter {
 			path: `/rest/events?since=${lastId}&timeout=${this.timeout}`,
 			method: 'GET',
 			headers: {
-				'Authorization': `Bearer ${this.token}`,
+				'X-API-Key': this.token,
 			}
 		};
 
@@ -287,7 +287,7 @@ class SyncthingMonitor extends EventEmitter {
 			path: '/rest/system/connections',
 			method: 'GET',
 			headers: {
-				'Authorization': `Bearer ${this.token}`,
+				'X-API-Key': this.token,
 			}
 		};
 
@@ -351,10 +351,10 @@ class SyncthingMonitor extends EventEmitter {
 			// Parse URL for hostname and port
 			const url = new URL(this.baseUrl);
 			
-			// Use IPv6 localhost if hostname is localhost/127.0.0.1
+			// Use IPv4 localhost instead of IPv6 to avoid connection issues
 			let hostname = url.hostname;
-			if (hostname === 'localhost' || hostname === '127.0.0.1') {
-				hostname = '::1'; // Try IPv6 first, fallback in request error handler
+			if (hostname === 'localhost') {
+				hostname = '127.0.0.1'; // Use IPv4 instead of IPv6
 			}
 			
 			const options = {
@@ -711,6 +711,8 @@ export default class SyncthingLauncher extends Plugin {
 						console.log('Process tree killed successfully.');
 					}
 				});
+				// Clear the instance reference
+				this.syncthingInstance = null;
 			}
 		}
 	}
@@ -764,10 +766,10 @@ export default class SyncthingLauncher extends Plugin {
 
 			const url = new URL(this.getSyncthingURL());
 			
-			// Use IPv6 localhost if hostname is localhost/127.0.0.1
+			// Use IPv4 localhost instead of IPv6 to avoid connection issues
 			let hostname = url.hostname;
-			if (hostname === 'localhost' || hostname === '127.0.0.1') {
-				hostname = '::1'; // Try IPv6 first, fallback in request error handler
+			if (hostname === 'localhost') {
+				hostname = '127.0.0.1'; // Use IPv4 instead of IPv6
 			}
 			
 			const options = {
@@ -776,7 +778,7 @@ export default class SyncthingLauncher extends Plugin {
 				path: '/rest/config',
 				method: 'GET',
 				headers: {
-					'Authorization': `Bearer ${this.settings.syncthingApiKey}`,
+					'X-API-Key': this.settings.syncthingApiKey,
 				}
 			};
 
@@ -810,10 +812,10 @@ export default class SyncthingLauncher extends Plugin {
 			const url = new URL(this.getSyncthingURL());
 			const postData = JSON.stringify(config);
 			
-			// Use IPv6 localhost if hostname is localhost/127.0.0.1
+			// Use IPv4 localhost instead of IPv6 to avoid connection issues
 			let hostname = url.hostname;
-			if (hostname === 'localhost' || hostname === '127.0.0.1') {
-				hostname = '::1'; // Try IPv6 first, fallback in request error handler
+			if (hostname === 'localhost') {
+				hostname = '127.0.0.1'; // Use IPv4 instead of IPv6
 			}
 			
 			const options = {
@@ -822,7 +824,7 @@ export default class SyncthingLauncher extends Plugin {
 				path: '/rest/config',
 				method: 'POST',
 				headers: {
-					'Authorization': `Bearer ${this.settings.syncthingApiKey}`,
+					'X-API-Key': this.settings.syncthingApiKey,
 					'Content-Type': 'application/json',
 					'Content-Length': Buffer.byteLength(postData)
 				}
@@ -1815,7 +1817,7 @@ export default class SyncthingLauncher extends Plugin {
 				path: `/rest/db/status?folder=${this.settings.vaultFolderID}`,
 				method: 'GET',
 				headers: {
-					'Authorization': `Bearer ${this.settings.syncthingApiKey}`,
+					'X-API-Key': this.settings.syncthingApiKey,
 				}
 			};
 

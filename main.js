@@ -243,7 +243,7 @@ var SyncthingMonitor = class extends import_events.EventEmitter {
       path: `/rest/events?since=${lastId}&timeout=${this.timeout}`,
       method: "GET",
       headers: {
-        "Authorization": `Bearer ${this.token}`
+        "X-API-Key": this.token
       }
     };
     const req = http.request(options, (res) => {
@@ -363,7 +363,7 @@ var SyncthingMonitor = class extends import_events.EventEmitter {
       path: "/rest/system/connections",
       method: "GET",
       headers: {
-        "Authorization": `Bearer ${this.token}`
+        "X-API-Key": this.token
       }
     };
     const req = http.request(options, (res) => {
@@ -415,8 +415,8 @@ var SyncthingMonitor = class extends import_events.EventEmitter {
     return new Promise((resolve) => {
       const url = new URL(this.baseUrl);
       let hostname = url.hostname;
-      if (hostname === "localhost" || hostname === "127.0.0.1") {
-        hostname = "::1";
+      if (hostname === "localhost") {
+        hostname = "127.0.0.1";
       }
       const options = {
         hostname,
@@ -687,6 +687,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
             console.log("Process tree killed successfully.");
           }
         });
+        this.syncthingInstance = null;
       }
     }
   }
@@ -730,8 +731,8 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       }
       const url = new URL(this.getSyncthingURL());
       let hostname = url.hostname;
-      if (hostname === "localhost" || hostname === "127.0.0.1") {
-        hostname = "::1";
+      if (hostname === "localhost") {
+        hostname = "127.0.0.1";
       }
       const options = {
         hostname,
@@ -739,7 +740,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         path: "/rest/config",
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${this.settings.syncthingApiKey}`
+          "X-API-Key": this.settings.syncthingApiKey
         }
       };
       const req = http.request(options, (res) => {
@@ -769,8 +770,8 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       const url = new URL(this.getSyncthingURL());
       const postData = JSON.stringify(config);
       let hostname = url.hostname;
-      if (hostname === "localhost" || hostname === "127.0.0.1") {
-        hostname = "::1";
+      if (hostname === "localhost") {
+        hostname = "127.0.0.1";
       }
       const options = {
         hostname,
@@ -778,7 +779,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         path: "/rest/config",
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${this.settings.syncthingApiKey}`,
+          "X-API-Key": this.settings.syncthingApiKey,
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(postData)
         }
@@ -1555,7 +1556,7 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
         path: `/rest/db/status?folder=${this.settings.vaultFolderID}`,
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${this.settings.syncthingApiKey}`
+          "X-API-Key": this.settings.syncthingApiKey
         }
       };
       const req = http.request(options, (res) => {
