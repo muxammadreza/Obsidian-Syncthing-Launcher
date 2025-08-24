@@ -1348,9 +1348,24 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
           const itemPath = path.join(dir, item);
           const stat = fs.statSync(itemPath);
           if (stat.isFile() && item === executableName) {
-            console.log(`\u2705 Found executable: ${itemPath}`);
-            return itemPath;
-          } else if (stat.isDirectory()) {
+            try {
+              const sizeInMB = (stat.size / 1024 / 1024).toFixed(1);
+              console.log(`Found potential executable: ${itemPath} (${stat.size} bytes = ${sizeInMB} MB)`);
+              if (stat.size > 1024 * 1024) {
+                console.log(`\u2705 Found legitimate executable: ${itemPath}`);
+                return itemPath;
+              } else {
+                console.log(`\u26A0\uFE0F Skipping small file (likely config): ${itemPath} (${stat.size} bytes)`);
+              }
+            } catch (statError) {
+              console.log(`Could not stat file: ${itemPath}`, statError);
+            }
+          }
+        }
+        for (const item of items) {
+          const itemPath = path.join(dir, item);
+          const stat = fs.statSync(itemPath);
+          if (stat.isDirectory()) {
             const found = findExecutable(itemPath);
             if (found)
               return found;
@@ -1362,6 +1377,29 @@ Sync: ${this.monitor.fileCompletion.toFixed(1)}%`;
       if (!executablePath) {
         console.error(`\u274C Executable ${executableName} not found in extracted archive`);
         return false;
+      }
+      const execStats = fs.statSync(executablePath);
+      const execSizeInMB = (execStats.size / 1024 / 1024).toFixed(1);
+      console.log(`Selected executable: ${executablePath} (${execStats.size} bytes = ${execSizeInMB} MB)`);
+      if (execStats.size < 1024 * 1024) {
+        console.error(`\u274C Selected file is too small to be a Syncthing binary (${execStats.size} bytes). This is likely a config file, not the executable.`);
+        return false;
+      }
+      if (process.platform === "darwin") {
+        try {
+          const fileTypeCheck = await new Promise((resolve) => {
+            exec2(`file "${executablePath}"`, (error, stdout) => {
+              resolve(stdout || "Could not determine file type");
+            });
+          });
+          console.log(`Pre-copy file type check: ${fileTypeCheck.trim()}`);
+          if (fileTypeCheck.includes("ASCII text") || fileTypeCheck.includes("text")) {
+            console.error(`\u274C Selected file is a text file, not a binary: ${fileTypeCheck.trim()}`);
+            return false;
+          }
+        } catch (typeError) {
+          console.log("Could not verify file type (non-fatal):", typeError);
+        }
       }
       let finalPath;
       if (process.platform === "win32") {

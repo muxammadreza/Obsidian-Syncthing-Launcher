@@ -1531,19 +1531,41 @@ export default class SyncthingLauncher extends Plugin {
 
 			console.log(`Looking for executable "${executableName}" in: ${extractDir}`);
 
-			// Recursively search for the executable
+			// Recursively search for the executable with priority for root-level files
 			const findExecutable = (dir: string): string | null => {
 				const items = fs.readdirSync(dir);
 				console.log(`Searching in ${dir}: found items: ${items.join(', ')}`);
 				
+				// First pass: look for the executable in the current directory (prioritize root level)
 				for (const item of items) {
 					const itemPath = path.join(dir, item);
 					const stat = fs.statSync(itemPath);
 					
 					if (stat.isFile() && item === executableName) {
-						console.log(`✅ Found executable: ${itemPath}`);
-						return itemPath;
-					} else if (stat.isDirectory()) {
+						// Additional validation - check if it's actually a binary executable
+						try {
+							const sizeInMB = (stat.size / 1024 / 1024).toFixed(1);
+							console.log(`Found potential executable: ${itemPath} (${stat.size} bytes = ${sizeInMB} MB)`);
+							
+							// Syncthing binaries are typically 10+ MB, so anything under 1MB is likely a config file
+							if (stat.size > 1024 * 1024) { // > 1MB
+								console.log(`✅ Found legitimate executable: ${itemPath}`);
+								return itemPath;
+							} else {
+								console.log(`⚠️ Skipping small file (likely config): ${itemPath} (${stat.size} bytes)`);
+							}
+						} catch (statError) {
+							console.log(`Could not stat file: ${itemPath}`, statError);
+						}
+					}
+				}
+				
+				// Second pass: search subdirectories if we didn't find it at this level
+				for (const item of items) {
+					const itemPath = path.join(dir, item);
+					const stat = fs.statSync(itemPath);
+					
+					if (stat.isDirectory()) {
 						const found = findExecutable(itemPath);
 						if (found) return found;
 					}
@@ -1555,6 +1577,35 @@ export default class SyncthingLauncher extends Plugin {
 			if (!executablePath) {
 				console.error(`❌ Executable ${executableName} not found in extracted archive`);
 				return false;
+			}
+
+			// Additional validation - verify it's actually a proper binary
+			const execStats = fs.statSync(executablePath);
+			const execSizeInMB = (execStats.size / 1024 / 1024).toFixed(1);
+			console.log(`Selected executable: ${executablePath} (${execStats.size} bytes = ${execSizeInMB} MB)`);
+			
+			if (execStats.size < 1024 * 1024) { // Less than 1MB
+				console.error(`❌ Selected file is too small to be a Syncthing binary (${execStats.size} bytes). This is likely a config file, not the executable.`);
+				return false;
+			}
+
+			// On macOS, check if it's a Mach-O binary
+			if (process.platform === 'darwin') {
+				try {
+					const fileTypeCheck = await new Promise<string>((resolve) => {
+						exec(`file "${executablePath}"`, (error: any, stdout: any) => {
+							resolve(stdout || 'Could not determine file type');
+						});
+					});
+					console.log(`Pre-copy file type check: ${fileTypeCheck.trim()}`);
+					
+					if (fileTypeCheck.includes('ASCII text') || fileTypeCheck.includes('text')) {
+						console.error(`❌ Selected file is a text file, not a binary: ${fileTypeCheck.trim()}`);
+						return false;
+					}
+				} catch (typeError) {
+					console.log('Could not verify file type (non-fatal):', typeError);
+				}
 			}
 
 			// Copy to final location based on platform
